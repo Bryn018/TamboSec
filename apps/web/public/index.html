@@ -6,37 +6,60 @@
   <title>TamboSec Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&family=Manrope:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
-    :root{--bg:#07111e;--panel:#0d1d2f;--panel2:#112740;--text:#d9ebff;--muted:#83a2c6;--critical:#ff4f7a;--high:#ff8b3d;--medium:#ffd166;--low:#6be3b0;--line:#1f3b5f;}
-    *{box-sizing:border-box} body{margin:0;font-family:"IBM Plex Sans",sans-serif;background:radial-gradient(circle at 0% 0%,#12335a 0,#07111e 45%),#07111e;color:var(--text)}
-    .wrap{max-width:1200px;margin:0 auto;padding:28px}
-    .hero{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px}
-    .title{font-family:"Chakra Petch",sans-serif;font-size:32px;font-weight:700;letter-spacing:.5px}
-    .subtitle{color:var(--muted);margin-top:6px}
-    .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
-    .card{background:linear-gradient(160deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.2)}
-    .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px}.v{font-size:26px;font-weight:700;margin-top:6px}
-    .actions{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
-    button,input{background:#0a1a2b;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
-    button{cursor:pointer;font-weight:600} button:hover{transform:translateY(-1px);border-color:#3e78b8}
-    .panel{background:rgba(8,20,35,.75);backdrop-filter: blur(4px);border:1px solid var(--line);border-radius:14px;padding:14px;margin-top:12px}
-    table{width:100%;border-collapse:collapse} th,td{padding:10px;border-bottom:1px solid #173353;text-align:left;font-size:14px} th{color:#9dbfe7}
-    .sev{font-size:12px;padding:4px 8px;border-radius:999px;font-weight:700;text-transform:uppercase;display:inline-block}
-    .critical{background:rgba(255,79,122,.14);color:var(--critical)} .high{background:rgba(255,139,61,.14);color:var(--high)} .medium{background:rgba(255,209,102,.12);color:var(--medium)} .low{background:rgba(107,227,176,.12);color:var(--low)}
+    :root{
+      --bg:#04070f;--fg:#def1ff;--muted:#8eb1cb;--line:#243f66;
+      --panel:rgba(8,18,36,.7);--panel-glass:rgba(20,35,64,.55);
+      --accent:#57d9ff;--violet:#9f7bff;--pink:#ff69b4;
+      --critical:#ff3d71;--high:#ff9248;--medium:#ffd56a;--low:#79edc0;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;color:var(--fg);font-family:Manrope,sans-serif;background:
+      radial-gradient(1000px 500px at -10% -10%, rgba(87,217,255,.18), transparent 60%),
+      radial-gradient(800px 500px at 110% 0%, rgba(159,123,255,.2), transparent 60%),
+      linear-gradient(160deg,#02040a,#050b17 50%,#091427);
+      min-height:100vh;
+    }
+    .noise:before{content:"";position:fixed;inset:0;background-image:radial-gradient(rgba(255,255,255,.04) .6px, transparent .6px);background-size:3px 3px;pointer-events:none;opacity:.17}
+    .wrap{max-width:1240px;margin:0 auto;padding:26px}
+    .hero{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;padding:18px 20px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(145deg,var(--panel),var(--panel-glass));box-shadow:0 18px 60px rgba(0,0,0,.35)}
+    .brand{font-family:Audiowide,sans-serif;font-size:30px;letter-spacing:.5px;background:linear-gradient(90deg,var(--accent),#fff,var(--violet));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+    .tag{color:var(--muted);margin-top:6px}
+    .tenant input{width:340px;max-width:100%}
+    .grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:14px 0}
+    .card{padding:14px 16px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(160deg,rgba(13,26,47,.8),rgba(11,20,36,.5));position:relative;overflow:hidden}
+    .card:after{content:"";position:absolute;inset:auto -30% -40% -30%;height:120px;background:radial-gradient(circle,rgba(87,217,255,.2),transparent 70%)}
+    .k{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)} .v{font-size:28px;font-weight:700;margin-top:6px}
+    .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0 14px}
+    button,input{border:1px solid var(--line);background:#091627;color:var(--fg);padding:10px 12px;border-radius:12px}
+    button{cursor:pointer;font-weight:700}
+    button:hover{border-color:var(--accent);box-shadow:0 0 0 1px rgba(87,217,255,.2),0 8px 25px rgba(87,217,255,.15)}
+    .stack{display:grid;gap:12px}
+    .panel{border:1px solid var(--line);border-radius:16px;padding:14px;background:linear-gradient(160deg,rgba(10,19,34,.75),rgba(12,24,44,.45));backdrop-filter:blur(6px)}
+    h3{margin:4px 0 10px;font-family:Audiowide,sans-serif;font-weight:400;font-size:16px;letter-spacing:.4px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px;border-bottom:1px solid #1a3458;text-align:left;font-size:13px}
+    th{font-size:12px;text-transform:uppercase;letter-spacing:.7px;color:#9ec4e3}
+    .sev{font-size:11px;padding:4px 8px;border-radius:999px;font-weight:700;text-transform:uppercase;display:inline-block}
+    .critical{background:rgba(255,61,113,.16);color:var(--critical)}
+    .high{background:rgba(255,146,72,.16);color:var(--high)}
+    .medium{background:rgba(255,213,106,.16);color:var(--medium)}
+    .low{background:rgba(121,237,192,.16);color:var(--low)}
     .muted{color:var(--muted)}
-    @media (max-width:980px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-    @media (max-width:640px){.grid{grid-template-columns:1fr}}
+    @media (max-width:1060px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+    @media (max-width:760px){.hero{flex-direction:column;align-items:flex-start}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width:520px){.grid{grid-template-columns:1fr}}
   </style>
 </head>
-<body>
+<body class="noise">
   <div class="wrap">
     <div class="hero">
       <div>
-        <div class="title">TamboSec Command Console</div>
-        <div class="subtitle">SMB Security Operations • Findings • Remediation Queue • Audit Timeline</div>
+        <div class="brand">TamboSec // Fusion Console</div>
+        <div class="tag">Art × Security Operations — precise monitoring and controlled remediation</div>
       </div>
-      <div><input id="tenantId" placeholder="tenant id" value="tnt_f9fd16fea05a" /></div>
+      <div class="tenant"><input id="tenantId" placeholder="tenant id" value="tnt_f9fd16fea05a" /></div>
     </div>
 
     <div class="grid" id="stats"></div>
@@ -48,24 +71,26 @@
       <button id="scheduleBtn">Set Scan Schedule</button>
     </div>
 
-    <div class="panel">
-      <h3>Alert Center (High/Critical)</h3>
-      <table><thead><tr><th>Message</th><th>Severity</th><th>Status</th><th>Action</th></tr></thead><tbody id="alertsBody"></tbody></table>
-    </div>
+    <div class="stack">
+      <div class="panel">
+        <h3>Alert Center (High/Critical)</h3>
+        <table><thead><tr><th>Message</th><th>Severity</th><th>Status</th><th>Action</th></tr></thead><tbody id="alertsBody"></tbody></table>
+      </div>
 
-    <div class="panel">
-      <h3>Findings</h3>
-      <table><thead><tr><th>Title</th><th>Severity</th><th>Status</th><th>Source</th></tr></thead><tbody id="findingsBody"></tbody></table>
-    </div>
+      <div class="panel">
+        <h3>Findings</h3>
+        <table><thead><tr><th>Title</th><th>Severity</th><th>Status</th><th>Source</th></tr></thead><tbody id="findingsBody"></tbody></table>
+      </div>
 
-    <div class="panel">
-      <h3>Remediation Queue</h3>
-      <table><thead><tr><th>Action</th><th>Status</th><th>Finding</th><th>Decision By</th></tr></thead><tbody id="approvalsBody"></tbody></table>
-    </div>
+      <div class="panel">
+        <h3>Remediation Queue</h3>
+        <table><thead><tr><th>Action</th><th>Status</th><th>Finding</th><th>Decision By</th></tr></thead><tbody id="approvalsBody"></tbody></table>
+      </div>
 
-    <div class="panel">
-      <h3>Recent Audit Events</h3>
-      <table><thead><tr><th>Time</th><th>Type</th><th>Actor</th></tr></thead><tbody id="eventsBody"></tbody></table>
+      <div class="panel">
+        <h3>Recent Audit Events</h3>
+        <table><thead><tr><th>Time</th><th>Type</th><th>Actor</th></tr></thead><tbody id="eventsBody"></tbody></table>
+      </div>
     </div>
   </div>
 
@@ -73,7 +98,6 @@
   <script>
     const $ = (id)=>document.getElementById(id);
     const apiBase = window.TAMBOSEC_CONFIG.API_BASE;
-
     const sevClass = (s)=>({critical:'critical',high:'high',medium:'medium',low:'low'}[s]||'medium');
 
     async function api(path, opts={}){

@@ -21,6 +21,8 @@ const newId = (prefix) => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
 const DATABASE_URL = process.env.DATABASE_URL;
 const useDb = Boolean(DATABASE_URL);
 const pool = useDb ? new Pool({ connectionString: DATABASE_URL, ssl: process.env.DB_SSL === '1' ? { rejectUnauthorized: false } : undefined }) : null;
+const SCHEDULER_ENABLED = process.env.SCHEDULER_ENABLED !== '0';
+const SCHEDULER_TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 60000);
 
 // Fallback in-memory stores when DB not configured
 const mem = {
@@ -84,6 +86,14 @@ async function initDb() {
       created_at timestamptz not null default now(),
       acknowledged_at timestamptz,
       acknowledged_by text
+    );
+    create table if not exists scan_schedules (
+      tenant_id text primary key references tenants(id) on delete cascade,
+      every_hours int not null check (every_hours between 1 and 168),
+      enabled boolean not null default true,
+      next_run_at timestamptz not null,
+      updated_at timestamptz not null default now(),
+      updated_by text
     );
     create index if not exists idx_findings_tenant_status on findings(tenant_id, status);
     create index if not exists idx_findings_tenant_severity on findings(tenant_id, severity);
@@ -211,6 +221,63 @@ function simulateGooglePosture({ tenantId, domain }) {
   return Promise.all(defs.map((d) => createFinding({ tenantId, ...d, source: 'google-workspace-posture' })));
 }
 
+async function getTenantDomain(tenantId) {
+  if (pool) {
+    const q = await pool.query('select domain from tenants where id=$1', [tenantId]);
+    return q.rows[0]?.domain || null;
+  }
+  return mem.tenants.get(tenantId)?.domain || null;
+}
+
+async function runScheduledScansTick() {
+  if (!SCHEDULER_ENABLED) return;
+
+  try {
+    if (pool) {
+      const lock = await pool.query(`select pg_try_advisory_lock(90442001) as locked`);
+      if (!lock.rows[0]?.locked) return;
+      try {
+        const due = await pool.query(
+          `select tenant_id as "tenantId", every_hours as "everyHours"
+           from scan_schedules
+           where enabled=true and next_run_at <= now()
+           order by next_run_at asc
+           limit 20`
+        );
+
+        for (const s of due.rows) {
+          const domain = await getTenantDomain(s.tenantId);
+          if (!domain) continue;
+
+          const created = await simulateGooglePosture({ tenantId: s.tenantId, domain });
+          await auditEvent({ tenantId: s.tenantId, type: 'scan.schedule.executed', actor: 'scheduler', metadata: { createdFindings: created.length, everyHours: s.everyHours } });
+          await pool.query(
+            `update scan_schedules set next_run_at = now() + make_interval(hours => every_hours), updated_at=now() where tenant_id=$1`,
+            [s.tenantId]
+          );
+        }
+      } finally {
+        await pool.query(`select pg_advisory_unlock(90442001)`);
+      }
+      return;
+    }
+
+    for (const [tenantId, s] of mem.scheduledScans.entries()) {
+      if (!s.enabled) continue;
+      if (new Date(s.nextRunAt) > new Date()) continue;
+      const domain = await getTenantDomain(tenantId);
+      if (!domain) continue;
+      const created = await simulateGooglePosture({ tenantId, domain });
+      await auditEvent({ tenantId, type: 'scan.schedule.executed', actor: 'scheduler', metadata: { createdFindings: created.length, everyHours: s.everyHours } });
+      s.nextRunAt = new Date(Date.now() + s.everyHours * 3600 * 1000).toISOString();
+      s.updatedAt = nowIso();
+      mem.scheduledScans.set(tenantId, s);
+    }
+  } catch (e) {
+    console.error('scheduler tick failed', e.message);
+  }
+}
+
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'tambosec-api', ts: nowIso(), version: '0.4.0-postgres', storage: pool ? 'postgres' : 'memory' });
 });
@@ -298,12 +365,7 @@ app.post('/v1/findings/:id/close', withTenant, async (req, res) => {
 
 app.post('/v1/connectors/google-workspace/posture-scan', withTenant, async (req, res) => {
   let domain = req.body?.domain;
-  if (!domain && pool) {
-    const q = await pool.query('select domain from tenants where id=$1', [req.tenantId]);
-    domain = q.rows[0]?.domain;
-  } else if (!domain) {
-    domain = mem.tenants.get(req.tenantId)?.domain;
-  }
+  if (!domain) domain = await getTenantDomain(req.tenantId);
   if (!domain) return res.status(400).json({ error: 'domain required (body.domain or tenant.domain)' });
 
   const created = await simulateGooglePosture({ tenantId: req.tenantId, domain });
@@ -432,15 +494,57 @@ app.post('/v1/alerts/:id/ack', withTenant, async (req, res) => {
   res.json(alert);
 });
 
+app.get('/v1/scans/schedule', withTenant, async (req, res) => {
+  if (pool) {
+    const q = await pool.query(
+      `select tenant_id as "tenantId", every_hours as "everyHours", enabled,
+              next_run_at as "nextRunAt", updated_at as "updatedAt", updated_by as "updatedBy"
+       from scan_schedules where tenant_id=$1`,
+      [req.tenantId]
+    );
+    return res.json({ schedule: q.rows[0] || null });
+  }
+  return res.json({ schedule: mem.scheduledScans.get(req.tenantId) || null });
+});
+
 app.post('/v1/scans/schedule', withTenant, async (req, res) => {
   const everyHours = Number(req.body?.everyHours || 24);
+  const enabled = req.body?.enabled !== false;
+  const updatedBy = req.body?.updatedBy || 'dashboard-user';
+
   if (!Number.isFinite(everyHours) || everyHours < 1 || everyHours > 168) {
     return res.status(400).json({ error: 'everyHours must be between 1 and 168' });
   }
-  const schedule = { tenantId: req.tenantId, everyHours, updatedAt: nowIso() };
+
+  if (pool) {
+    const q = await pool.query(
+      `insert into scan_schedules (tenant_id, every_hours, enabled, next_run_at, updated_by)
+       values ($1,$2,$3, now() + make_interval(hours => $2), $4)
+       on conflict (tenant_id) do update set
+         every_hours=excluded.every_hours,
+         enabled=excluded.enabled,
+         next_run_at=now() + make_interval(hours => excluded.every_hours),
+         updated_at=now(),
+         updated_by=excluded.updated_by
+       returning tenant_id as "tenantId", every_hours as "everyHours", enabled,
+                 next_run_at as "nextRunAt", updated_at as "updatedAt", updated_by as "updatedBy"`,
+      [req.tenantId, everyHours, enabled, updatedBy]
+    );
+    await auditEvent({ tenantId: req.tenantId, type: 'scan.schedule.updated', actor: updatedBy, metadata: { everyHours, enabled } });
+    return res.json({ ok: true, schedule: q.rows[0] });
+  }
+
+  const schedule = {
+    tenantId: req.tenantId,
+    everyHours,
+    enabled,
+    nextRunAt: new Date(Date.now() + everyHours * 3600 * 1000).toISOString(),
+    updatedAt: nowIso(),
+    updatedBy,
+  };
   mem.scheduledScans.set(req.tenantId, schedule);
-  await auditEvent({ tenantId: req.tenantId, type: 'scan.schedule.updated', actor: req.body?.updatedBy || 'dashboard-user', metadata: { everyHours } });
-  res.json({ ok: true, schedule, note: 'Scheduler persistence currently in-memory; cron wiring next.' });
+  await auditEvent({ tenantId: req.tenantId, type: 'scan.schedule.updated', actor: updatedBy, metadata: { everyHours, enabled } });
+  res.json({ ok: true, schedule });
 });
 
 app.use((err, _req, res, _next) => {
@@ -450,9 +554,15 @@ app.use((err, _req, res, _next) => {
 
 initDb()
   .then(() => {
+    if (SCHEDULER_ENABLED) {
+      setInterval(runScheduledScansTick, SCHEDULER_TICK_MS);
+      runScheduledScansTick().catch(() => null);
+    }
+
     app.listen(port, () => {
       console.log(`TamboSec API listening on ${port}`);
       console.log(`[storage] ${pool ? 'postgres' : 'memory'}`);
+      console.log(`[scheduler] ${SCHEDULER_ENABLED ? `enabled @ ${SCHEDULER_TICK_MS}ms` : 'disabled'}`);
     });
   })
   .catch((e) => {
