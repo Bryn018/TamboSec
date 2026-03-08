@@ -1,4 +1,4 @@
-# TamboSec API MVP (v0.2)
+# TamboSec API MVP (v0.3)
 
 ## Tenant header
 Most tenant-scoped endpoints require:
@@ -10,7 +10,7 @@ Most tenant-scoped endpoints require:
 - `GET /health`
 
 ### Tenants
-- `POST /v1/tenants` `{ "name": "Acme Agency" }`
+- `POST /v1/tenants` `{ "name": "Acme Agency", "domain": "acme.com" }`
 - `GET /v1/tenants`
 
 ### Findings
@@ -18,21 +18,23 @@ Most tenant-scoped endpoints require:
 - `GET /v1/findings`
 - `POST /v1/findings/:id/close`
 
-Finding creation payload example:
+### Google Workspace posture collector (MVP simulation)
+- `POST /v1/connectors/google-workspace/posture-scan`
+
+Payload example:
 ```json
 {
   "tenantId": "tnt_xxx",
-  "title": "Admin account without MFA",
-  "severity": "high",
-  "source": "google-workspace",
-  "category": "identity_hygiene",
-  "metadata": {
-    "user": "admin@company.com"
-  }
+  "domain": "acme.com"
 }
 ```
 
-### Remediation Approvals
+This creates deterministic findings for:
+- admin account without MFA
+- dormant privileged account
+- elevated external collaborator
+
+### Remediation approvals
 - `POST /v1/remediations/request`
 - `GET /v1/remediations`
 - `POST /v1/remediations/:id/approve`
@@ -42,3 +44,8 @@ Allowed action types:
 - `force_password_reset`
 - `revoke_admin_role`
 - `revoke_active_sessions`
+
+### Audit events
+- `GET /v1/audit-events`
+
+Includes tenant-level event trail for findings and remediation decisions.
