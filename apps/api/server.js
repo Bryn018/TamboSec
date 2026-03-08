@@ -6,6 +6,15 @@ const app = express();
 const port = process.env.PORT || 8080;
 app.use(express.json());
 
+// CORS for web console -> API calls
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-tenant-id');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
+
 const nowIso = () => new Date().toISOString();
 const newId = (prefix) => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
 
