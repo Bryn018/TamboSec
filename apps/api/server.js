@@ -1,13 +1,25 @@
 const express = require('express');
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 const { Pool } = require('pg');
 
 const app = express();
 const port = process.env.PORT || 8080;
-app.use(express.json());
+app.use(express.json({ limit: '256kb' }));
 
-// CORS for web console -> API calls
+app.use(rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_PER_MIN || 180),
+  standardHeaders: true,
+  legacyHeaders: false,
+}));
+
+// Basic security headers + CORS for web console -> API calls
 app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-tenant-id, x-api-key');
@@ -109,6 +121,20 @@ async function initDb() {
     create index if not exists idx_audit_tenant_ts on audit_events(tenant_id, ts desc);
     create index if not exists idx_alerts_tenant_status on alerts(tenant_id, status, created_at desc);
   `);
+}
+
+function asCleanString(v, max = 256) {
+  if (typeof v !== 'string') return null;
+  const out = v.trim();
+  if (!out || out.length > max) return null;
+  return out;
+}
+
+function asSafeDomain(v) {
+  const s = asCleanString(v, 253);
+  if (!s) return null;
+  if (!/^[a-zA-Z0-9.-]+$/.test(s)) return null;
+  return s.toLowerCase();
 }
 
 function requireAuth(req, res, next) {
@@ -325,8 +351,10 @@ app.get('/v1/auth/me', requireAuth, (req, res) => {
 app.use('/v1', requireAuth);
 
 app.post('/v1/tenants', requireRole('admin'), async (req, res) => {
-  const { name, domain } = req.body || {};
-  if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
+  const name = asCleanString(req.body?.name, 120);
+  const domain = req.body?.domain ? asSafeDomain(req.body?.domain) : null;
+  if (!name) return res.status(400).json({ error: 'name is required (1-120 chars)' });
+  if (req.body?.domain && !domain) return res.status(400).json({ error: 'domain format invalid' });
   const id = newId('tnt');
 
   if (pool) {
@@ -353,9 +381,16 @@ app.get('/v1/tenants', async (_req, res) => {
 });
 
 app.post('/v1/findings', requireRole('analyst'), withTenant, async (req, res) => {
-  const { title, severity = 'medium', source = 'manual', category = 'identity_hygiene', metadata = {} } = req.body || {};
-  if (!title || typeof title !== 'string') return res.status(400).json({ error: 'title is required' });
+  const title = asCleanString(req.body?.title, 300);
+  const severity = req.body?.severity || 'medium';
+  const source = asCleanString(req.body?.source || 'manual', 80);
+  const category = asCleanString(req.body?.category || 'identity_hygiene', 80);
+  const metadata = typeof req.body?.metadata === 'object' && req.body?.metadata !== null ? req.body.metadata : {};
+
+  if (!title) return res.status(400).json({ error: 'title is required' });
   if (!new Set(['critical', 'high', 'medium', 'low']).has(severity)) return res.status(400).json({ error: 'severity must be critical|high|medium|low' });
+  if (!source || !category) return res.status(400).json({ error: 'source/category invalid' });
+
   const finding = await createFinding({ tenantId: req.tenantId, title, severity, source, category, metadata });
   res.status(201).json(finding);
 });
@@ -402,7 +437,8 @@ app.post('/v1/findings/:id/close', requireRole('analyst'), withTenant, async (re
 });
 
 app.post('/v1/connectors/google-workspace/posture-scan', requireRole('analyst'), withTenant, async (req, res) => {
-  let domain = req.body?.domain;
+  let domain = req.body?.domain ? asSafeDomain(req.body.domain) : null;
+  if (req.body?.domain && !domain) return res.status(400).json({ error: 'domain format invalid' });
   if (!domain) domain = await getTenantDomain(req.tenantId);
   if (!domain) return res.status(400).json({ error: 'domain required (body.domain or tenant.domain)' });
 
