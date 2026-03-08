@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TamboSec Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root{--bg:#07111e;--panel:#0d1d2f;--panel2:#112740;--text:#d9ebff;--muted:#83a2c6;--critical:#ff4f7a;--high:#ff8b3d;--medium:#ffd166;--low:#6be3b0;--line:#1f3b5f;}
+    *{box-sizing:border-box} body{margin:0;font-family:"IBM Plex Sans",sans-serif;background:radial-gradient(circle at 0% 0%,#12335a 0,#07111e 45%),#07111e;color:var(--text)}
+    .wrap{max-width:1200px;margin:0 auto;padding:28px}
+    .hero{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:20px}
+    .title{font-family:"Chakra Petch",sans-serif;font-size:32px;font-weight:700;letter-spacing:.5px}
+    .subtitle{color:var(--muted);margin-top:6px}
+    .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+    .card{background:linear-gradient(160deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.2)}
+    .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px}.v{font-size:26px;font-weight:700;margin-top:6px}
+    .actions{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
+    button,input{background:#0a1a2b;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+    button{cursor:pointer;font-weight:600} button:hover{transform:translateY(-1px);border-color:#3e78b8}
+    .panel{background:rgba(8,20,35,.75);backdrop-filter: blur(4px);border:1px solid var(--line);border-radius:14px;padding:14px;margin-top:12px}
+    table{width:100%;border-collapse:collapse} th,td{padding:10px;border-bottom:1px solid #173353;text-align:left;font-size:14px} th{color:#9dbfe7}
+    .sev{font-size:12px;padding:4px 8px;border-radius:999px;font-weight:700;text-transform:uppercase;display:inline-block}
+    .critical{background:rgba(255,79,122,.14);color:var(--critical)} .high{background:rgba(255,139,61,.14);color:var(--high)} .medium{background:rgba(255,209,102,.12);color:var(--medium)} .low{background:rgba(107,227,176,.12);color:var(--low)}
+    .muted{color:var(--muted)}
+    @media (max-width:980px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media (max-width:640px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <div class="title">TamboSec Command Console</div>
+        <div class="subtitle">SMB Security Operations • Findings • Remediation Queue • Audit Timeline</div>
+      </div>
+      <div><input id="tenantId" placeholder="tenant id" value="tnt_f9fd16fea05a" /></div>
+    </div>
+
+    <div class="grid" id="stats"></div>
+
+    <div class="actions">
+      <button id="refreshBtn">Refresh</button>
+      <button id="scanBtn">Run Posture Scan</button>
+    </div>
+
+    <div class="panel">
+      <h3>Findings</h3>
+      <table><thead><tr><th>Title</th><th>Severity</th><th>Status</th><th>Source</th></tr></thead><tbody id="findingsBody"></tbody></table>
+    </div>
+
+    <div class="panel">
+      <h3>Remediation Queue</h3>
+      <table><thead><tr><th>Action</th><th>Status</th><th>Finding</th><th>Decision By</th></tr></thead><tbody id="approvalsBody"></tbody></table>
+    </div>
+
+    <div class="panel">
+      <h3>Recent Audit Events</h3>
+      <table><thead><tr><th>Time</th><th>Type</th><th>Actor</th></tr></thead><tbody id="eventsBody"></tbody></table>
+    </div>
+  </div>
+
+  <script src="/config.js"></script>
+  <script>
+    const $ = (id)=>document.getElementById(id);
+    const apiBase = window.TAMBOSEC_CONFIG.API_BASE;
+
+    const sevClass = (s)=>({critical:'critical',high:'high',medium:'medium',low:'low'}[s]||'medium');
+
+    async function api(path, opts={}){
+      const tenantId = $('tenantId').value.trim();
+      const headers = Object.assign({'content-type':'application/json','x-tenant-id':tenantId}, opts.headers||{});
+      const res = await fetch(`${apiBase}${path}`, {...opts, headers});
+      if(!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    function renderStats(findings, approvals){
+      const open = findings.filter(f=>f.status==='open');
+      const pending = approvals.filter(a=>a.status==='pending').length;
+      const critical = open.filter(f=>f.severity==='critical').length;
+      const high = open.filter(f=>f.severity==='high').length;
+      $('stats').innerHTML = [
+        ['Open Findings', open.length],
+        ['Pending Approvals', pending],
+        ['Critical', critical],
+        ['High', high],
+      ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+    }
+
+    function renderFindings(items){
+      $('findingsBody').innerHTML = items.map(f=>`<tr><td>${f.title}</td><td><span class="sev ${sevClass(f.severity)}">${f.severity}</span></td><td>${f.status}</td><td class="muted">${f.source}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No findings</td></tr>';
+    }
+
+    function renderApprovals(items){
+      $('approvalsBody').innerHTML = items.map(a=>`<tr><td>${a.actionType}</td><td>${a.status}</td><td class="muted">${a.findingId}</td><td>${a.decisionBy||'-'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No approvals</td></tr>';
+    }
+
+    function renderEvents(items){
+      $('eventsBody').innerHTML = items.slice(0,12).map(e=>`<tr><td>${new Date(e.ts).toLocaleString()}</td><td>${e.type}</td><td>${e.actor||'-'}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No events</td></tr>';
+    }
+
+    async function refresh(){
+      const [findings, approvals, events] = await Promise.all([
+        api('/v1/findings'), api('/v1/remediations'), api('/v1/audit-events')
+      ]);
+      renderFindings(findings.items||[]);
+      renderApprovals(approvals.items||[]);
+      renderEvents(events.items||[]);
+      renderStats(findings.items||[], approvals.items||[]);
+    }
+
+    $('refreshBtn').onclick = ()=>refresh().catch(e=>alert(e.message));
+    $('scanBtn').onclick = async ()=>{
+      const tenantId = $('tenantId').value.trim();
+      await api('/v1/connectors/google-workspace/posture-scan',{method:'POST',body:JSON.stringify({tenantId,domain:'demo.local'})});
+      await refresh();
+    };
+
+    refresh().catch(e=>alert(e.message));
+  </script>
+</body>
+</html>
