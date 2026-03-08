@@ -59,7 +59,10 @@
         <div class="brand">TamboSec // Fusion Console</div>
         <div class="tag">Art × Security Operations — precise monitoring and controlled remediation</div>
       </div>
-      <div class="tenant"><input id="tenantId" placeholder="tenant id" value="tnt_f9fd16fea05a" /></div>
+      <div class="tenant" style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end">
+        <input id="tenantId" placeholder="tenant id" value="tnt_f9fd16fea05a" />
+        <input id="apiKey" placeholder="api key" />
+      </div>
     </div>
 
     <div class="grid" id="stats"></div>
@@ -99,10 +102,14 @@
     const $ = (id)=>document.getElementById(id);
     const apiBase = window.TAMBOSEC_CONFIG.API_BASE;
     const sevClass = (s)=>({critical:'critical',high:'high',medium:'medium',low:'low'}[s]||'medium');
+    const savedApiKey = localStorage.getItem('tambosec_api_key') || '';
+    if (savedApiKey) $('apiKey').value = savedApiKey;
 
     async function api(path, opts={}){
       const tenantId = $('tenantId').value.trim();
-      const headers = Object.assign({'content-type':'application/json','x-tenant-id':tenantId}, opts.headers||{});
+      const apiKey = $('apiKey').value.trim();
+      if (apiKey) localStorage.setItem('tambosec_api_key', apiKey);
+      const headers = Object.assign({'content-type':'application/json','x-tenant-id':tenantId,'x-api-key':apiKey}, opts.headers||{});
       const res = await fetch(`${apiBase}${path}`, {...opts, headers});
       if(!res.ok) throw new Error(await res.text());
       return res.json();

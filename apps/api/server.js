@@ -10,7 +10,7 @@ app.use(express.json());
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-tenant-id');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-tenant-id, x-api-key');
   if (req.method === 'OPTIONS') return res.status(204).end();
   next();
 });
@@ -23,6 +23,15 @@ const useDb = Boolean(DATABASE_URL);
 const pool = useDb ? new Pool({ connectionString: DATABASE_URL, ssl: process.env.DB_SSL === '1' ? { rejectUnauthorized: false } : undefined }) : null;
 const SCHEDULER_ENABLED = process.env.SCHEDULER_ENABLED !== '0';
 const SCHEDULER_TICK_MS = Number(process.env.SCHEDULER_TICK_MS || 60000);
+const AUTH_DISABLED = process.env.AUTH_DISABLED === '1';
+
+const roleRank = { viewer: 1, analyst: 2, admin: 3, owner: 4 };
+const apiKeyPairs = (process.env.TAMBOSEC_API_KEYS || '').split(',').map(s => s.trim()).filter(Boolean);
+const apiKeyMap = new Map();
+for (const pair of apiKeyPairs) {
+  const [role, key] = pair.split(':');
+  if (role && key && roleRank[role]) apiKeyMap.set(key, role);
+}
 
 // Fallback in-memory stores when DB not configured
 const mem = {
@@ -100,6 +109,29 @@ async function initDb() {
     create index if not exists idx_audit_tenant_ts on audit_events(tenant_id, ts desc);
     create index if not exists idx_alerts_tenant_status on alerts(tenant_id, status, created_at desc);
   `);
+}
+
+function requireAuth(req, res, next) {
+  if (AUTH_DISABLED) {
+    req.auth = { role: 'owner', subject: 'auth-disabled' };
+    return next();
+  }
+
+  const key = req.header('x-api-key');
+  if (!key) return res.status(401).json({ error: 'missing_api_key' });
+  const role = apiKeyMap.get(key);
+  if (!role) return res.status(401).json({ error: 'invalid_api_key' });
+  req.auth = { role, subject: 'api-key' };
+  next();
+}
+
+function requireRole(minRole) {
+  return (req, res, next) => {
+    const current = req.auth?.role;
+    if (!current) return res.status(401).json({ error: 'unauthorized' });
+    if ((roleRank[current] || 0) < (roleRank[minRole] || 0)) return res.status(403).json({ error: 'forbidden', need: minRole, have: current });
+    next();
+  };
 }
 
 async function withTenant(req, res, next) {
@@ -286,7 +318,13 @@ app.get('/', (_req, res) => {
   res.json({ name: 'TamboSec API', status: 'mvp-core-online' });
 });
 
-app.post('/v1/tenants', async (req, res) => {
+app.get('/v1/auth/me', requireAuth, (req, res) => {
+  res.json({ ok: true, role: req.auth.role, subject: req.auth.subject });
+});
+
+app.use('/v1', requireAuth);
+
+app.post('/v1/tenants', requireRole('admin'), async (req, res) => {
   const { name, domain } = req.body || {};
   if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name is required' });
   const id = newId('tnt');
@@ -314,7 +352,7 @@ app.get('/v1/tenants', async (_req, res) => {
   res.json({ items: Array.from(mem.tenants.values()) });
 });
 
-app.post('/v1/findings', withTenant, async (req, res) => {
+app.post('/v1/findings', requireRole('analyst'), withTenant, async (req, res) => {
   const { title, severity = 'medium', source = 'manual', category = 'identity_hygiene', metadata = {} } = req.body || {};
   if (!title || typeof title !== 'string') return res.status(400).json({ error: 'title is required' });
   if (!new Set(['critical', 'high', 'medium', 'low']).has(severity)) return res.status(400).json({ error: 'severity must be critical|high|medium|low' });
@@ -322,7 +360,7 @@ app.post('/v1/findings', withTenant, async (req, res) => {
   res.status(201).json(finding);
 });
 
-app.get('/v1/findings', withTenant, async (req, res) => {
+app.get('/v1/findings', requireRole('viewer'), withTenant, async (req, res) => {
   const severity = req.query.severity;
   if (pool) {
     const params = [req.tenantId];
@@ -341,7 +379,7 @@ app.get('/v1/findings', withTenant, async (req, res) => {
   res.json({ items, total: items.length });
 });
 
-app.post('/v1/findings/:id/close', withTenant, async (req, res) => {
+app.post('/v1/findings/:id/close', requireRole('analyst'), withTenant, async (req, res) => {
   if (pool) {
     const q = await pool.query(
       `update findings set status='closed', updated_at=now()
@@ -363,7 +401,7 @@ app.post('/v1/findings/:id/close', withTenant, async (req, res) => {
   res.json(finding);
 });
 
-app.post('/v1/connectors/google-workspace/posture-scan', withTenant, async (req, res) => {
+app.post('/v1/connectors/google-workspace/posture-scan', requireRole('analyst'), withTenant, async (req, res) => {
   let domain = req.body?.domain;
   if (!domain) domain = await getTenantDomain(req.tenantId);
   if (!domain) return res.status(400).json({ error: 'domain required (body.domain or tenant.domain)' });
@@ -373,7 +411,7 @@ app.post('/v1/connectors/google-workspace/posture-scan', withTenant, async (req,
   res.status(201).json({ tenantId: req.tenantId, source: 'google-workspace-posture', mode: 'simulated', createdFindings: created.length, findings: created });
 });
 
-app.post('/v1/remediations/request', withTenant, async (req, res) => {
+app.post('/v1/remediations/request', requireRole('analyst'), withTenant, async (req, res) => {
   const { findingId, actionType, reason } = req.body || {};
   const allowedActions = new Set(['force_password_reset', 'revoke_admin_role', 'revoke_active_sessions']);
   if (!findingId) return res.status(400).json({ error: 'valid findingId required' });
@@ -426,10 +464,10 @@ async function decideApproval(req, res, status) {
   res.json(approval);
 }
 
-app.post('/v1/remediations/:id/approve', withTenant, async (req, res) => decideApproval(req, res, 'approved'));
-app.post('/v1/remediations/:id/reject', withTenant, async (req, res) => decideApproval(req, res, 'rejected'));
+app.post('/v1/remediations/:id/approve', requireRole('admin'), withTenant, async (req, res) => decideApproval(req, res, 'approved'));
+app.post('/v1/remediations/:id/reject', requireRole('admin'), withTenant, async (req, res) => decideApproval(req, res, 'rejected'));
 
-app.get('/v1/remediations', withTenant, async (req, res) => {
+app.get('/v1/remediations', requireRole('viewer'), withTenant, async (req, res) => {
   if (pool) {
     const q = await pool.query(
       `select id, tenant_id as "tenantId", finding_id as "findingId", action_type as "actionType", reason,
@@ -443,7 +481,7 @@ app.get('/v1/remediations', withTenant, async (req, res) => {
   res.json({ items, total: items.length });
 });
 
-app.get('/v1/audit-events', withTenant, async (req, res) => {
+app.get('/v1/audit-events', requireRole('viewer'), withTenant, async (req, res) => {
   if (pool) {
     const q = await pool.query(
       `select id, tenant_id as "tenantId", type, actor, finding_id as "findingId", approval_id as "approvalId", metadata, ts
@@ -456,7 +494,7 @@ app.get('/v1/audit-events', withTenant, async (req, res) => {
   res.json({ items, total: items.length });
 });
 
-app.get('/v1/alerts', withTenant, async (req, res) => {
+app.get('/v1/alerts', requireRole('viewer'), withTenant, async (req, res) => {
   if (pool) {
     const q = await pool.query(
       `select id, tenant_id as "tenantId", finding_id as "findingId", severity, status, message,
@@ -470,7 +508,7 @@ app.get('/v1/alerts', withTenant, async (req, res) => {
   res.json({ items, total: items.length });
 });
 
-app.post('/v1/alerts/:id/ack', withTenant, async (req, res) => {
+app.post('/v1/alerts/:id/ack', requireRole('analyst'), withTenant, async (req, res) => {
   if (pool) {
     const q = await pool.query(
       `update alerts set status='acknowledged', acknowledged_at=now(), acknowledged_by=$1
@@ -494,7 +532,7 @@ app.post('/v1/alerts/:id/ack', withTenant, async (req, res) => {
   res.json(alert);
 });
 
-app.get('/v1/scans/schedule', withTenant, async (req, res) => {
+app.get('/v1/scans/schedule', requireRole('viewer'), withTenant, async (req, res) => {
   if (pool) {
     const q = await pool.query(
       `select tenant_id as "tenantId", every_hours as "everyHours", enabled,
@@ -507,7 +545,7 @@ app.get('/v1/scans/schedule', withTenant, async (req, res) => {
   return res.json({ schedule: mem.scheduledScans.get(req.tenantId) || null });
 });
 
-app.post('/v1/scans/schedule', withTenant, async (req, res) => {
+app.post('/v1/scans/schedule', requireRole('admin'), withTenant, async (req, res) => {
   const everyHours = Number(req.body?.everyHours || 24);
   const enabled = req.body?.enabled !== false;
   const updatedBy = req.body?.updatedBy || 'dashboard-user';
