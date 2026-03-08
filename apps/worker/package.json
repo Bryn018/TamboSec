@@ -1,13 +1,13 @@
 {
   "name": "tambosec-worker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node src/index.js"
   },
   "dependencies": {
-    "bullmq": "^5.7.6",
-    "ioredis": "^5.4.1"
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.1"
   }
 }
