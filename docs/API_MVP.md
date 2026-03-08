@@ -1,4 +1,8 @@
-# TamboSec API MVP (v0.3)
+# TamboSec API MVP (v0.4)
+
+## Storage mode
+- If `DATABASE_URL` is set: Postgres persistence is used.
+- If not set: in-memory fallback is used.
 
 ## Tenant header
 Most tenant-scoped endpoints require:
@@ -21,15 +25,7 @@ Most tenant-scoped endpoints require:
 ### Google Workspace posture collector (MVP simulation)
 - `POST /v1/connectors/google-workspace/posture-scan`
 
-Payload example:
-```json
-{
-  "tenantId": "tnt_xxx",
-  "domain": "acme.com"
-}
-```
-
-This creates deterministic findings for:
+Creates deterministic findings for:
 - admin account without MFA
 - dormant privileged account
 - elevated external collaborator
@@ -47,5 +43,3 @@ Allowed action types:
 
 ### Audit events
 - `GET /v1/audit-events`
-
-Includes tenant-level event trail for findings and remediation decisions.
