@@ -44,6 +44,13 @@
     <div class="actions">
       <button id="refreshBtn">Refresh</button>
       <button id="scanBtn">Run Posture Scan</button>
+      <input id="scheduleHours" type="number" min="1" max="168" value="24" style="width:120px" />
+      <button id="scheduleBtn">Set Scan Schedule</button>
+    </div>
+
+    <div class="panel">
+      <h3>Alert Center (High/Critical)</h3>
+      <table><thead><tr><th>Message</th><th>Severity</th><th>Status</th><th>Action</th></tr></thead><tbody id="alertsBody"></tbody></table>
     </div>
 
     <div class="panel">
@@ -77,17 +84,26 @@
       return res.json();
     }
 
-    function renderStats(findings, approvals){
+    function renderStats(findings, approvals, alerts){
       const open = findings.filter(f=>f.status==='open');
       const pending = approvals.filter(a=>a.status==='pending').length;
       const critical = open.filter(f=>f.severity==='critical').length;
       const high = open.filter(f=>f.severity==='high').length;
+      const unreadAlerts = alerts.filter(a=>a.status==='unread').length;
       $('stats').innerHTML = [
         ['Open Findings', open.length],
         ['Pending Approvals', pending],
+        ['Unread Alerts', unreadAlerts],
         ['Critical', critical],
         ['High', high],
       ].map(([k,v])=>`<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+    }
+
+    function renderAlerts(items){
+      $('alertsBody').innerHTML = items.map(a=>{
+        const ack = a.status === 'unread' ? `<button onclick="ackAlert('${a.id}')">Acknowledge</button>` : '-';
+        return `<tr><td>${a.message}</td><td><span class="sev ${sevClass(a.severity)}">${a.severity}</span></td><td>${a.status}</td><td>${ack}</td></tr>`;
+      }).join('') || '<tr><td colspan="4" class="muted">No active alerts</td></tr>';
     }
 
     function renderFindings(items){
@@ -108,13 +124,14 @@
     }
 
     async function refresh(){
-      const [findings, approvals, events] = await Promise.all([
-        api('/v1/findings'), api('/v1/remediations'), api('/v1/audit-events')
+      const [findings, approvals, events, alerts] = await Promise.all([
+        api('/v1/findings'), api('/v1/remediations'), api('/v1/audit-events'), api('/v1/alerts')
       ]);
+      renderAlerts(alerts.items||[]);
       renderFindings(findings.items||[]);
       renderApprovals(approvals.items||[]);
       renderEvents(events.items||[]);
-      renderStats(findings.items||[], approvals.items||[]);
+      renderStats(findings.items||[], approvals.items||[], alerts.items||[]);
     }
 
     async function approve(id){
@@ -127,13 +144,25 @@
       await refresh();
     }
 
+    async function ackAlert(id){
+      await api(`/v1/alerts/${id}/ack`, { method:'POST', body: JSON.stringify({ ackBy:'dashboard-user' }) });
+      await refresh();
+    }
+
     window.approve = approve;
     window.reject = reject;
+    window.ackAlert = ackAlert;
 
     $('refreshBtn').onclick = ()=>refresh().catch(e=>alert(e.message));
     $('scanBtn').onclick = async ()=>{
       const tenantId = $('tenantId').value.trim();
       await api('/v1/connectors/google-workspace/posture-scan',{method:'POST',body:JSON.stringify({tenantId,domain:'demo.local'})});
+      await refresh();
+    };
+    $('scheduleBtn').onclick = async ()=>{
+      const everyHours = Number($('scheduleHours').value || 24);
+      const out = await api('/v1/scans/schedule',{method:'POST',body:JSON.stringify({everyHours, updatedBy:'dashboard-user'})});
+      alert(`Scan schedule set: every ${out.schedule.everyHours}h`);
       await refresh();
     };
 

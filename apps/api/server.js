@@ -27,6 +27,8 @@ const mem = {
   tenants: new Map(),
   findings: new Map(),
   approvals: new Map(),
+  alerts: new Map(),
+  scheduledScans: new Map(),
   events: [],
 };
 
@@ -72,9 +74,21 @@ async function initDb() {
       metadata jsonb not null default '{}'::jsonb,
       ts timestamptz not null default now()
     );
+    create table if not exists alerts (
+      id text primary key,
+      tenant_id text not null references tenants(id) on delete cascade,
+      finding_id text not null references findings(id) on delete cascade,
+      severity text not null check (severity in ('critical','high')),
+      status text not null default 'unread' check (status in ('unread','acknowledged')),
+      message text not null,
+      created_at timestamptz not null default now(),
+      acknowledged_at timestamptz,
+      acknowledged_by text
+    );
     create index if not exists idx_findings_tenant_status on findings(tenant_id, status);
     create index if not exists idx_findings_tenant_severity on findings(tenant_id, severity);
     create index if not exists idx_audit_tenant_ts on audit_events(tenant_id, ts desc);
+    create index if not exists idx_alerts_tenant_status on alerts(tenant_id, status, created_at desc);
   `);
 }
 
@@ -104,6 +118,33 @@ async function auditEvent({ tenantId, type, actor = null, findingId = null, appr
   } else {
     mem.events.push({ id, tenantId, type, actor, findingId, approvalId, metadata, ts: nowIso() });
     if (mem.events.length > 5000) mem.events.shift();
+  }
+}
+
+async function createDashboardAlert(finding) {
+  if (!['high', 'critical'].includes(finding.severity)) return;
+
+  const id = newId('alt');
+  const message = `${finding.severity.toUpperCase()}: ${finding.title}`;
+
+  if (pool) {
+    await pool.query(
+      `insert into alerts (id, tenant_id, finding_id, severity, message)
+       values ($1,$2,$3,$4,$5)`,
+      [id, finding.tenantId, finding.id, finding.severity, message]
+    );
+  } else {
+    mem.alerts.set(id, {
+      id,
+      tenantId: finding.tenantId,
+      findingId: finding.id,
+      severity: finding.severity,
+      status: 'unread',
+      message,
+      createdAt: nowIso(),
+      acknowledgedAt: null,
+      acknowledgedBy: null,
+    });
   }
 }
 
@@ -148,6 +189,7 @@ async function createFinding({ tenantId, title, severity = 'medium', source = 'm
     );
     const finding = q.rows[0];
     await auditEvent({ tenantId, type: 'finding.created', findingId: finding.id, metadata: { severity, source, category } });
+    await createDashboardAlert(finding);
     await notifySlackFinding(finding);
     return finding;
   }
@@ -155,6 +197,7 @@ async function createFinding({ tenantId, title, severity = 'medium', source = 'm
   const finding = { id, tenantId, title, severity, source, category, status: 'open', metadata, createdAt: nowIso(), updatedAt: nowIso() };
   mem.findings.set(id, finding);
   await auditEvent({ tenantId, type: 'finding.created', findingId: id, metadata: { severity, source, category } });
+  await createDashboardAlert(finding);
   await notifySlackFinding(finding);
   return finding;
 }
@@ -349,6 +392,55 @@ app.get('/v1/audit-events', withTenant, async (req, res) => {
   }
   const items = mem.events.filter((e) => e.tenantId === req.tenantId).slice(-200).reverse();
   res.json({ items, total: items.length });
+});
+
+app.get('/v1/alerts', withTenant, async (req, res) => {
+  if (pool) {
+    const q = await pool.query(
+      `select id, tenant_id as "tenantId", finding_id as "findingId", severity, status, message,
+              created_at as "createdAt", acknowledged_at as "acknowledgedAt", acknowledged_by as "acknowledgedBy"
+       from alerts where tenant_id=$1 order by created_at desc limit 200`,
+      [req.tenantId]
+    );
+    return res.json({ items: q.rows, total: q.rowCount });
+  }
+  const items = Array.from(mem.alerts.values()).filter((a) => a.tenantId === req.tenantId).sort((a,b)=> new Date(b.createdAt)-new Date(a.createdAt));
+  res.json({ items, total: items.length });
+});
+
+app.post('/v1/alerts/:id/ack', withTenant, async (req, res) => {
+  if (pool) {
+    const q = await pool.query(
+      `update alerts set status='acknowledged', acknowledged_at=now(), acknowledged_by=$1
+       where id=$2 and tenant_id=$3
+       returning id, tenant_id as "tenantId", finding_id as "findingId", severity, status, message,
+       created_at as "createdAt", acknowledged_at as "acknowledgedAt", acknowledged_by as "acknowledgedBy"`,
+      [req.body?.ackBy || 'dashboard-user', req.params.id, req.tenantId]
+    );
+    if (q.rowCount === 0) return res.status(404).json({ error: 'alert not found' });
+    await auditEvent({ tenantId: req.tenantId, type: 'alert.acknowledged', actor: q.rows[0].acknowledgedBy, metadata: { alertId: req.params.id } });
+    return res.json(q.rows[0]);
+  }
+
+  const alert = mem.alerts.get(req.params.id);
+  if (!alert || alert.tenantId !== req.tenantId) return res.status(404).json({ error: 'alert not found' });
+  alert.status = 'acknowledged';
+  alert.acknowledgedAt = nowIso();
+  alert.acknowledgedBy = req.body?.ackBy || 'dashboard-user';
+  mem.alerts.set(alert.id, alert);
+  await auditEvent({ tenantId: req.tenantId, type: 'alert.acknowledged', actor: alert.acknowledgedBy, metadata: { alertId: alert.id } });
+  res.json(alert);
+});
+
+app.post('/v1/scans/schedule', withTenant, async (req, res) => {
+  const everyHours = Number(req.body?.everyHours || 24);
+  if (!Number.isFinite(everyHours) || everyHours < 1 || everyHours > 168) {
+    return res.status(400).json({ error: 'everyHours must be between 1 and 168' });
+  }
+  const schedule = { tenantId: req.tenantId, everyHours, updatedAt: nowIso() };
+  mem.scheduledScans.set(req.tenantId, schedule);
+  await auditEvent({ tenantId: req.tenantId, type: 'scan.schedule.updated', actor: req.body?.updatedBy || 'dashboard-user', metadata: { everyHours } });
+  res.json({ ok: true, schedule, note: 'Scheduler persistence currently in-memory; cron wiring next.' });
 });
 
 app.use((err, _req, res, _next) => {
