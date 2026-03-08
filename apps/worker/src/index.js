@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import http from 'node:http';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const API_BASE = process.env.API_BASE || 'https://tambosec-api-324509025713.europe-west4.run.app';
@@ -74,4 +75,13 @@ setInterval(() => {
 }, TICK_MS);
 
 runTick().catch((e) => console.error('[worker] initial tick error', e.message));
-console.log('[worker] running', { API_BASE, SCHEDULER_ENABLED, TICK_MS });
+
+const port = Number(process.env.PORT || 8080);
+http
+  .createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, service: 'tambosec-worker', scheduler: SCHEDULER_ENABLED }));
+  })
+  .listen(port, () => {
+    console.log('[worker] running', { API_BASE, SCHEDULER_ENABLED, TICK_MS, port });
+  });
