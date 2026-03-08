@@ -95,7 +95,12 @@
     }
 
     function renderApprovals(items){
-      $('approvalsBody').innerHTML = items.map(a=>`<tr><td>${a.actionType}</td><td>${a.status}</td><td class="muted">${a.findingId}</td><td>${a.decisionBy||'-'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No approvals</td></tr>';
+      $('approvalsBody').innerHTML = items.map(a=>{
+        const actionButtons = a.status === 'pending'
+          ? `<button onclick="approve('${a.id}')">Approve</button> <button onclick="reject('${a.id}')">Reject</button>`
+          : '';
+        return `<tr><td>${a.actionType}</td><td>${a.status} ${actionButtons}</td><td class="muted">${a.findingId}</td><td>${a.decisionBy||'-'}</td></tr>`;
+      }).join('') || '<tr><td colspan="4" class="muted">No approvals</td></tr>';
     }
 
     function renderEvents(items){
@@ -111,6 +116,19 @@
       renderEvents(events.items||[]);
       renderStats(findings.items||[], approvals.items||[]);
     }
+
+    async function approve(id){
+      await api(`/v1/remediations/${id}/approve`, { method:'POST', body: JSON.stringify({ decisionBy:'dashboard-user' }) });
+      await refresh();
+    }
+
+    async function reject(id){
+      await api(`/v1/remediations/${id}/reject`, { method:'POST', body: JSON.stringify({ decisionBy:'dashboard-user' }) });
+      await refresh();
+    }
+
+    window.approve = approve;
+    window.reject = reject;
 
     $('refreshBtn').onclick = ()=>refresh().catch(e=>alert(e.message));
     $('scanBtn').onclick = async ()=>{

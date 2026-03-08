@@ -107,6 +107,35 @@ async function auditEvent({ tenantId, type, actor = null, findingId = null, appr
   }
 }
 
+async function notifySlackFinding(finding) {
+  const webhook = process.env.SLACK_WEBHOOK_URL;
+  if (!webhook) return;
+  if (!['high', 'critical'].includes(finding.severity)) return;
+
+  const payload = {
+    text: `🚨 TamboSec ${finding.severity.toUpperCase()} finding`,
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: `*${finding.title}*` } },
+      {
+        type: 'context',
+        elements: [
+          { type: 'mrkdwn', text: `tenant: \`${finding.tenantId}\` • source: \`${finding.source}\` • category: \`${finding.category}\`` }
+        ]
+      }
+    ]
+  };
+
+  try {
+    await fetch(webhook, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    console.error('slack notify failed', e.message);
+  }
+}
+
 async function createFinding({ tenantId, title, severity = 'medium', source = 'manual', category = 'identity_hygiene', metadata = {} }) {
   const id = newId('fdg');
   if (pool) {
@@ -119,12 +148,14 @@ async function createFinding({ tenantId, title, severity = 'medium', source = 'm
     );
     const finding = q.rows[0];
     await auditEvent({ tenantId, type: 'finding.created', findingId: finding.id, metadata: { severity, source, category } });
+    await notifySlackFinding(finding);
     return finding;
   }
 
   const finding = { id, tenantId, title, severity, source, category, status: 'open', metadata, createdAt: nowIso(), updatedAt: nowIso() };
   mem.findings.set(id, finding);
   await auditEvent({ tenantId, type: 'finding.created', findingId: id, metadata: { severity, source, category } });
+  await notifySlackFinding(finding);
   return finding;
 }
 
