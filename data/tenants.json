@@ -1,1 +1,8 @@
-[]
+[
+  {
+    "id": "tnt_demo",
+    "name": "DemoCorp",
+    "domain": "demo.local",
+    "createdAt": "2026-06-21T19:18:37.311Z"
+  }
+]
