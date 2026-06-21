@@ -1,1 +1,13 @@
-[]
+[
+  {
+    "id": "alt_74ba283c4d38",
+    "tenantId": "tnt_demo",
+    "findingId": "fdg_a0747b476fe3",
+    "severity": "high",
+    "status": "unread",
+    "message": "HIGH: Admin account without MFA",
+    "createdAt": "2026-06-21T19:18:43.681Z",
+    "acknowledgedAt": null,
+    "acknowledgedBy": null
+  }
+]
