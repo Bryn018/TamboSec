@@ -1,1 +1,18 @@
-[]
+[
+  {
+    "id": "fdg_a0747b476fe3",
+    "tenantId": "tnt_demo",
+    "title": "Admin account without MFA",
+    "severity": "high",
+    "source": "google-workspace-posture",
+    "category": "identity_hygiene",
+    "status": "open",
+    "metadata": {
+      "user": "admin@demo.local",
+      "control": "mfa",
+      "state": "missing"
+    },
+    "createdAt": "2026-06-21T19:18:41.888Z",
+    "updatedAt": "2026-06-21T19:18:41.888Z"
+  }
+]
