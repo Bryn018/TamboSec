@@ -66,20 +66,39 @@ export async function writeJSON(fileName, data, sha = null) {
   await apiCall('PUT', `/repos/${OWNER}/${REPO}/contents/${DATA_DIR}/${fileName}`, body);
 }
 
+// Retry once on SHA mismatch (concurrent write from another process)
+async function retryOnConflict(fn, maxRetries = 2) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e.message.includes('does not match') && i < maxRetries - 1) {
+        console.log(`[storage] SHA conflict, retry ${i + 1}/${maxRetries - 1}`);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 export async function appendJSON(fileName, item) {
-  const { data, sha } = await readJSON(fileName);
-  data.push(item);
-  await writeJSON(fileName, data, sha);
-  return data;
+  return retryOnConflict(async () => {
+    const { data, sha } = await readJSON(fileName);
+    data.push(item);
+    await writeJSON(fileName, data, sha);
+    return data;
+  });
 }
 
 export async function updateJSON(fileName, predicate, updater) {
-  const { data, sha } = await readJSON(fileName);
-  const idx = data.findIndex(predicate);
-  if (idx === -1) return null;
-  data[idx] = updater(data[idx]);
-  await writeJSON(fileName, data, sha);
-  return data[idx];
+  return retryOnConflict(async () => {
+    const { data, sha } = await readJSON(fileName);
+    const idx = data.findIndex(predicate);
+    if (idx === -1) return null;
+    data[idx] = updater(data[idx]);
+    await writeJSON(fileName, data, sha);
+    return data[idx];
+  });
 }
 
 export async function queryJSON(fileName, predicate) {
