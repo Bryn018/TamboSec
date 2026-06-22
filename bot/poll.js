@@ -6,6 +6,7 @@ const GH_PAT = process.env.GITHUB_PAT;
 const OWNER = 'Bryn018';
 const REPO = 'tambosec';
 const STATE_FILE = 'data/_bot-state.json';
+const DATA_DIR = 'data';
 
 async function tg(method, body = {}) {
   const url = 'https://api.telegram.org/bot' + BOT_TOKEN + '/' + method;
