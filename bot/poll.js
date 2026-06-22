@@ -57,10 +57,10 @@ async function ghApi(method, path, body = null) {
 
 async function ghRead(fileName) {
   try {
-    const res = await ghApi('GET', '/repos/' + OWNER + '/' + REPO + '/contents/' + fileName);
+    const res = await ghApi('GET', `/repos/${OWNER}/${REPO}/contents/${DATA_DIR}/${fileName}`);
     return { data: JSON.parse(Buffer.from(res.content, 'base64').toString()), sha: res.sha };
   } catch (e) {
-    if (e.message.includes('404')) return { data: {}, sha: null };
+    if (e.message.includes('404') || e.message.includes('Not Found')) return { data: {}, sha: null };
     throw e;
   }
 }
