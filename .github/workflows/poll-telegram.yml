@@ -17,4 +17,4 @@ jobs:
       - run: cd bot && node poll.js single
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
+          GITHUB_PAT: ${{ secrets.PAT }}
