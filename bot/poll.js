@@ -19,8 +19,9 @@ async function tg(method, body = {}) {
   return json.result;
 }
 
+import https from 'node:https';
+
 async function ghApi(method, path, body = null) {
-  const https = require('https');
   const options = {
     hostname: 'api.github.com',
     path: path,
