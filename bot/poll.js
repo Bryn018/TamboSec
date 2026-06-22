@@ -15,7 +15,7 @@ async function tg(method, body = {}) {
     body: JSON.stringify(body),
   });
   const json = await res.json();
-  if (!json.ok) throw new Error('telegram ' + method + ' failed: ' + json.description);
+  if (!json.ok) throw new Error('telegram ' + method + ' failed: ' + json.description + ' (code: ' + json.error_code + ')');
   return json.result;
 }
 
@@ -43,9 +43,9 @@ async function ghApi(method, path, body = null) {
         try {
           const json = JSON.parse(data);
           if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
-          else reject(new Error(json.message || 'HTTP ' + res.statusCode));
+          else reject(new Error('GitHub API ' + method + ' ' + path + ': ' + (json.message || 'HTTP ' + res.statusCode)));
         } catch {
-          reject(new Error(data || 'HTTP ' + res.statusCode));
+          reject(new Error('GitHub API ' + method + ' ' + path + ': ' + (data || 'HTTP ' + res.statusCode)));
         }
       });
     });
