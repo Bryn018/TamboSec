@@ -230,6 +230,35 @@ export default {
       return json(cls)
     }
 
+    // ─── Acknowledge an alert or finding (POST) ──────────
+    if (request.method === 'POST' && url.pathname === '/api/ack') {
+      const b = await bodyJson(request)
+      const { tenantId, kind, id } = b
+      if (!tenantId || !['alert', 'finding'].includes(kind) || !id) return json({ error: 'need tenantId, kind(alert|finding), id' }, 400)
+      const table = kind === 'alert' ? 'alerts' : 'findings'
+      const status = kind === 'alert' ? 'read' : 'resolved'
+      await env.DB.prepare('UPDATE ' + table + ' SET status = ? WHERE id = ? AND tenantId = ?').bind(status, id, tenantId).run()
+      await logAudit(env, tenantId, 'item.acked', { kind, id })
+      return json({ ok: true, kind, id, status })
+    }
+
+    // ─── Tenants: list (GET) + create (POST) ────────────
+    if (url.pathname === '/api/tenant') {
+      if (request.method === 'GET') {
+        const { results } = await env.DB.prepare('SELECT id, name, domain, stack, createdAt FROM tenants ORDER BY createdAt DESC').all()
+        return json({ tenants: (results || []).map((t) => ({ ...t, stack: safeStack(t.stack) })) })
+      }
+      const b = await bodyJson(request)
+      const { name, domain, stack } = b
+      if (!name || !domain) return json({ error: 'name and domain required' }, 400)
+      const id = 'tnt_' + crypto.randomUUID().slice(0, 8)
+      const stk = Array.isArray(stack) ? stack : (stack || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+      await env.DB.prepare('INSERT INTO tenants (id, name, domain, stack, createdAt) VALUES (?, ?, ?, ?, strftime(\'%Y-%m-%dT%H:%M:%SZ\',\'now\'))')
+        .bind(id, name, domain, JSON.stringify(stk)).run()
+      await logAudit(env, id, 'tenant.created', { name, domain })
+      return json({ ok: true, id, name, domain, stack: stk }, 201)
+    }
+
     // ─── Dashboard HTML fallback (also served from Pages) ─
     if (request.method === 'GET' && url.pathname === '/dashboard') {
       return new Response('', { status: 302, headers: { 'Location': 'https://tambosec.insights.autos/' } })

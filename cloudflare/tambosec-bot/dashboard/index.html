@@ -81,6 +81,18 @@
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); color: var(--ink); padding: 12px 18px; border-radius: 12px; box-shadow: var(--shadow); opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none; z-index: 20; max-width: 90vw }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px) }
   .toast.err { border-color: var(--crit) }
+  .modal { position: fixed; inset: 0; background: rgba(4,7,15,.7); display: none; place-items: center; z-index: 30; padding: 20px }
+  .modal.show { display: grid }
+  .modal .box { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 22px; max-width: 560px; width: 100%; box-shadow: var(--shadow); max-height: 85vh; overflow: auto }
+  .modal h3 { margin: 0 0 6px; font-size: 16px }
+  .modal .kv { font-size: 13px; color: var(--muted); margin: 4px 0 }
+  .modal .kv b { color: var(--ink) }
+  .modal .desc { margin-top: 12px; font-size: 13px; line-height: 1.6; color: var(--ink) }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px }
+  .mini { font-size: 11px; padding: 4px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); cursor: pointer }
+  .mini:hover { border-color: var(--accent) }
+  .mini.danger { border-color: var(--crit); color: var(--crit) }
+  .click { cursor: pointer; text-decoration: underline dotted; color: #bcd2ff }
   footer { color: var(--muted); font-size: 12px; padding: 0 24px 36px; max-width: 1180px; margin: 0 auto; line-height: 1.7 }
   code { background: #0e1530; padding: 1px 6px; border-radius: 6px; color: #bcd2ff; font-size: 12px }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px }
@@ -177,6 +189,17 @@
         <div id="cfgOut" class="answer"></div>
       </div>
     </section>
+    <section><h2>Tenants</h2>
+      <div class="panel" style="padding:16px">
+        <div id="tenants" class="empty">Loading…</div>
+        <div class="row2" style="margin-top:12px">
+          <input id="tName" placeholder="Name (e.g. InsightsWeb)" />
+          <input id="tDomain" placeholder="Domain (e.g. insights.autos)" />
+        </div>
+        <input id="tStack" placeholder="Stack (wordpress,nginx,apache)" style="width:100%;margin-top:10px" />
+        <button id="tBtn" style="margin-top:10px">Add tenant</button>
+      </div>
+    </section>
     <section><h2>Remediation queue</h2>
       <div class="panel"><div id="approvals" class="empty">Loading…</div></div>
     </section>
@@ -193,6 +216,11 @@
   </div>
 </main>
 <div class="toast" id="toast"></div>
+<div class="modal" id="modal"><div class="box">
+  <h3 id="m-title">Finding</h3>
+  <div id="m-body"></div>
+  <div class="btnrow" id="m-actions"></div>
+</div></div>
 <footer>
   TamboSec monitors security posture, screens inbound email, and correlates your stack against live threat intel (CISA KEV, FIRST EPSS, MITRE ATT&CK) — all on Cloudflare. Data is live from your D1 database. The site is protected by Cloudflare Access; the API is token-gated.
 </footer>
@@ -246,19 +274,25 @@
       $('cards').innerHTML = cards.map(c => '<div class="card"><div class="n ' + (c[2] || '') + '">' + c[1] + '</div><div class="l">' + c[0] + '</div></div>').join('');
       const rows = (d.findings || []).map((f) => {
         const sev = (f.severity || '').toLowerCase();
+        const m = f.metadata || {};
         const ce = (f.cve ? f.cve : '') + (f.epss != null ? ' · ' + Number(f.epss).toFixed(3) : '');
+        const title = f.title || '';
+        const detail = JSON.stringify({ tenantId: state.tenant, id: f.id, title, severity: f.severity, source: f.source, cve: f.cve, epss: f.epss, product: m.product, attack: m.attack, ransomware: m.ransomware, description: f.description, recommendation: f.recommendation });
         return '<tr class="row"><td class="' + (sev === 'critical' ? 'crit' : sev === 'high' ? 'high' : sev === 'medium' ? 'med' : 'low') + '"><b>' + (f.severity || '') + '</b></td>' +
-          '<td>' + escapeHtml(f.title || '') + '</td><td><span class="pill">' + (f.source || '') + '</span></td><td>' + (ce || '<span class="muted">—</span>') + '</td></tr>';
+          '<td><span class="click" onclick=\'openFinding(' + JSON.stringify(detail).replace(/'/g, '&#39;') + ')\'>' + escapeHtml(title) + '</span></td>' +
+          '<td><span class="pill">' + (f.source || '') + '</span></td>' +
+          '<td>' + (ce || '<span class="muted">—</span>') + '</td>' +
+          '<td><button class="mini" onclick="ack(\'finding\',\'' + (f.id || '') + '\')">Ack</button></td></tr>';
       }).join('');
-      $('rows').innerHTML = rows || '<tr><td colspan="4" class="empty">No findings. Run a scan (Actions).</td></tr>';
-      loadAlerts(); loadMail(); loadApprovals();
+      $('rows').innerHTML = rows || '<tr><td colspan="5" class="empty">No findings. Run a scan (Actions).</td></tr>';
+      loadAlerts(); loadMail(); loadApprovals(); loadTenants();
     } catch (e) { $('tenant').textContent = 'auth error — set token'; toast('Load failed: ' + e.message, true); }
   }
   async function loadAlerts() {
     try {
       const d = await api('/api/alerts');
       const a = d.alerts || [];
-      $('alerts').innerHTML = a.length ? a.map(x => '<div class="mailrow"><span class="' + sev(x.severity) + '">' + (x.severity || '').toUpperCase() + '</span><span>' + escapeHtml(x.message || '') + '</span><span class="pill">' + (x.id || '') + '</span></div>').join('') : '<div class="empty">✅ No unread alerts.</div>';
+      $('alerts').innerHTML = a.length ? a.map(x => '<div class="mailrow"><span class="' + sev(x.severity) + '">' + (x.severity || '').toUpperCase() + '</span><span>' + escapeHtml(x.message || '') + '</span><span class="btnrow"><button class="mini" onclick="ack(\'alert\',\'' + (x.id || '') + '\')">Ack</button><button class="mini danger" onclick="requestRemediation(\'' + (x.id || '') + '\',\'' + (x.findingId || '') + '\')">Remediate</button></span></div>').join('') : '<div class="empty">✅ No unread alerts.</div>';
     } catch (e) { $('alerts').innerHTML = '<div class="empty">failed</div>'; }
   }
   async function loadMail() {
@@ -276,6 +310,46 @@
     } catch (e) { $('approvals').innerHTML = '<div class="empty">failed</div>'; }
   }
   function sev(s) { return (s === 'critical' ? 'crit' : s === 'high' ? 'high' : s === 'medium' ? 'med' : 'low'); }
+
+  async function loadTenants() {
+    try {
+      const d = await api('/api/tenant');
+      const t = d.tenants || [];
+      $('tenants').innerHTML = t.length ? t.map(x => '<div class="mailrow"><span><b>' + escapeHtml(x.name || '') + '</b> <span class="muted">' + escapeHtml(x.domain || '') + '</span></span><span class="pill">' + (x.id || '') + '</span><span class="pill">' + (x.stack ? (Array.isArray(x.stack) ? x.stack.join(',') : x.stack) : '—') + '</span></div>').join('') : '<div class="empty">No tenants yet. Add one below.</div>';
+    } catch (e) { $('tenants').innerHTML = '<div class="empty">failed</div>'; }
+  }
+  $('tBtn').onclick = async () => {
+    const name = $('tName').value.trim(), domain = $('tDomain').value.trim(), stack = $('tStack').value.trim();
+    if (!name || !domain) return toast('Name and domain required', true);
+    try { const d = await api('/api/tenant', { method: 'POST', headers: { 'content-type': 'application/json', 'X-TamboSec-Token': state.token }, body: JSON.stringify({ name, domain, stack }) }); toast('Tenant created: ' + d.id); loadTenants(); } catch (e) { toast('Error: ' + e.message, true); }
+  };
+
+  function openFinding(d) {
+    const m = d;
+    $('m-title').textContent = m.title || 'Finding';
+    let html = '';
+    html += '<div class="kv">Severity: <b>' + (m.severity || '') + '</b> · Source: <b>' + (m.source || '') + '</b></div>';
+    if (m.cve) html += '<div class="kv">CVE: <b>' + escapeHtml(m.cve) + '</b></div>';
+    if (m.epss != null) html += '<div class="kv">EPSS: <b>' + Number(m.epss).toFixed(3) + '</b></div>';
+    if (m.product) html += '<div class="kv">Product: <b>' + escapeHtml(m.product) + '</b></div>';
+    if (m.attack) html += '<div class="kv">ATT&CK: <b>' + escapeHtml(m.attack) + '</b></div>';
+    if (m.ransomware) html += '<div class="kv">Ransomware campaign: <b>' + escapeHtml(m.ransomware) + '</b></div>';
+    if (m.description) html += '<div class="desc">' + escapeHtml(m.description) + '</div>';
+    if (m.recommendation) html += '<div class="desc"><b>Recommendation:</b> ' + escapeHtml(m.recommendation) + '</div>';
+    $('m-body').innerHTML = html;
+    $('m-actions').innerHTML = '<button class="mini" onclick="ack(\'finding\',\'' + (m.id || '') + '\')">Acknowledge</button><button class="mini" onclick="document.getElementById(\'modal\').classList.remove(\'show\')">Close</button>';
+    $('modal').classList.add('show');
+  }
+  async function ack(kind, id) {
+    try { await api('/api/ack', { method: 'POST', headers: { 'content-type': 'application/json', 'X-TamboSec-Token': state.token }, body: JSON.stringify({ tenantId: state.tenant, kind, id }) }); toast(kind + ' acknowledged'); load(); } catch (e) { toast('Error: ' + e.message, true); }
+  }
+  async function requestRemediation(alertId, findingId) {
+    const actionType = prompt('Remediation action: force_password_reset | revoke_admin_role | revoke_active_sessions', 'force_password_reset');
+    if (!actionType) return;
+    try { const d = await api('/api/remediate', { method: 'POST', headers: { 'content-type': 'application/json', 'X-TamboSec-Token': state.token }, body: JSON.stringify({ tenantId: state.tenant, findingId, actionType }) }); toast('Remediation requested: ' + d.approvalId); loadApprovals(); } catch (e) { toast('Error: ' + e.message, true); }
+  }
+  // close modal on backdrop click
+  $('modal').onclick = (e) => { if (e.target.id === 'modal') $('modal').classList.remove('show'); };
 
   // tabs
   document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
