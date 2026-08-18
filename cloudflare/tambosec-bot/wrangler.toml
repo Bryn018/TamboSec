@@ -31,6 +31,9 @@ crons = ["7 * * * *"]
 KEV_API_URL = "https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json"
 # Cloudflare DNS-over-HTTPS for SPF/DMARC/MX checks (no token needed)
 DOH_URL = "https://cloudflare-dns.com/dns-query"
+# Threat-Scope feed Worker (live KEV/EPSS/ATT&CK reused by Path 3). Cloudflare host
+# is reachable from this Worker; if unreachable at runtime we fall back to the D1 KEV cache.
+THREAT_SCOPE_URL = "https://threat-scope-sync.walybewillin.workers.dev"
 
 # Secrets (set via `wrangler secret put`, never committed):
 #   BOT_TOKEN        — Telegram bot token from @BotFather

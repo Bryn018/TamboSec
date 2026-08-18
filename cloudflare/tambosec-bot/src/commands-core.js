@@ -376,6 +376,35 @@ export async function cmdMailLog({ reply, args }) {
   await reply(`*Email Security Log (${items.length}):*\n\n${lines.join('\n\n')}`);
 }
 
+// ─── /threat (Path 3) ─────────────────────────────────────
+export async function cmdThreat({ reply, args }) {
+  const tenantId = args[0];
+  if (!tenantId) return reply('Usage: `/threat <tenantId>`');
+  const { data: tenants } = await readJSON('tenants.json');
+  const tenant = tenants.find((t) => t.id === tenantId);
+  if (!tenant) return reply('❌ Tenant not found. Use `/tenants`.');
+  const stack = tenant.stack || [];
+  if (!stack.length) return reply('ℹ️ Set a tech stack first: `/setstack ' + tenantId + ' wordpress,nginx,apache`');
+
+  const { correlateThreats } = await import('./threatintel.js');
+  await reply(`🛰 Running threat-intel correlation for *${tenant.name}*...`);
+  const ti = await correlateThreats(tenantId, tenant.name, stack);
+  if (!ti.findings.length) {
+    return reply(`✅ *No active exploited-vuln exposure* for ${tenant.name}.\nStack: \`${stack.join(', ')}\`\nIntel source: ${ti.meta.kev_source}`);
+  }
+  let msg = `🛰 *Threat-Intel Exposure — ${tenant.name}*\n\n`;
+  for (const f of ti.findings.slice(0, 15)) {
+    const m = f.metadata || {};
+    msg += `${f.severity === 'critical' ? '🔴' : '🟠'} *${m.cve || f.title}* ${m.product ? '(' + m.product + ')' : ''}\n`;
+    if (m.ransomware) msg += `   ⚠️ Linked to ransomware campaign\n`;
+    if (m.epss != null) msg += `   EPSS: ${(m.epss * 100).toFixed(0)}% (p${((m.percentile || 0) * 100).toFixed(0)})\n`;
+    if (m.technique) msg += `   ATT&CK: ${m.technique.id} ${m.technique.name}\n`;
+    if (m.intel_source) msg += `   Source: ${m.intel_source}\n`;
+    msg += `\n`;
+  }
+  await reply(msg);
+}
+
 // ─── Command router ───────────────────────────────────────
 const commands = {
   start: cmdStart,
@@ -391,6 +420,7 @@ const commands = {
   setstack: cmdSetStack,
   summary: cmdSummary,
   maillog: cmdMailLog,
+  threat: cmdThreat,
 };
 
 export async function handleCommand({ command, args, reply, chatId }) {

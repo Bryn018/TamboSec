@@ -3,6 +3,7 @@ import { setEnv } from './scanner.js'
 import { handleCommand, handleCallback } from './commands-core.js'
 import { runPostureScan } from './scanner.js'
 import { handleInboundEmail, classifyText } from './mail.js'
+import { probeThreatScope, correlateThreats } from './threatintel.js'
 
 // ─── Telegram transport ────────────────────────────────────
 function tg(token, method, body = {}) {
@@ -78,6 +79,26 @@ export default {
       const result = await handleInboundEmail(message, env)
       if (origSend) env.EMAIL.send = origSend
       return json({ ...result, forwarded: forwarded.fired, destination: env.EMAIL && env.EMAIL.destination_address })
+    }
+
+    // Path 3 reachability probe: can this Worker reach the Threat-Scope feeds?
+    // Secret-gated. Confirms KEV/EPSS/ATT&CK are live (or reports fallback).
+    if (request.method === 'GET' && url.pathname === '/api/threattest') {
+      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_SECRET) {
+        return new Response('forbidden', { status: 403 })
+      }
+      const probe = await probeThreatScope()
+      return json(probe)
+    }
+
+    // Path 3 correlation test (no external fetch; reads D1 cache only).
+    if (request.method === 'GET' && url.pathname === '/api/corrtest') {
+      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_SECRET) {
+        return new Response('forbidden', { status: 403 })
+      }
+      const stack = (url.searchParams.get('stack') || 'wordpress,nginx,apache').split(',').map((s) => s.trim().toLowerCase())
+      const ti = await correlateThreats('test', 'TestCorp', stack)
+      return json({ count: ti.findings.length, meta: ti.meta, sample: ti.findings.slice(0, 5) })
     }
 
     // One-time webhook registration (call this once after deploy).

@@ -13,6 +13,8 @@ const TABLE = {
   'schedules.json': 'schedules',
   'summaries.json': 'summaries',
   'mail_log.json': 'mail_log',
+  'epss.json': 'epss',
+  'attack.json': 'attack',
 }
 
 function tableFor(fileName) {
@@ -126,4 +128,26 @@ export function setDB(db) { _db = db }
 export function getDB() {
   if (!_db) throw new Error('DB not initialised')
   return _db
+}
+
+// Bulk insert many rows into a table in a single transaction (avoids the
+// per-row round-trip cost of appendJSON when a scan yields hundreds of rows).
+export async function bulkInsert(fileName, rows) {
+  const db = getDB()
+  const table = tableFor(fileName)
+  if (!rows.length) return 0
+  const CHUNK = 200
+  let inserted = 0
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const slice = rows.slice(i, i + CHUNK)
+    const stmts = slice.map((item) => {
+      const r = objToRow(item)
+      const cols = Object.keys(r)
+      const placeholders = cols.map(() => '?').join(',')
+      return db.prepare(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`).bind(...cols.map((c) => r[c]))
+    })
+    await db.batch(stmts)
+    inserted += slice.length
+  }
+  return inserted
 }

@@ -104,3 +104,16 @@ CREATE TABLE config (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+CREATE TABLE epss (
+  cve TEXT PRIMARY KEY,
+  epss REAL,
+  percentile REAL
+);
+
+CREATE TABLE attack (
+  id INTEGER PRIMARY KEY,
+  tid TEXT,
+  name TEXT,
+  description TEXT
+);

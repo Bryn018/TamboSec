@@ -1,5 +1,6 @@
-import { appendJSON, readJSON, clearOpenForTenant, getKev } from './storage.js'
+import { appendJSON, readJSON, clearOpenForTenant, getKev, bulkInsert } from './storage.js'
 import { randomBytes } from 'node:crypto'
+import { correlateThreats } from './threatintel.js'
 
 function newId(prefix) {
   return `${prefix}_${randomBytes(6).toString('hex')}`
@@ -258,6 +259,45 @@ export async function runPostureScan(tenantId, domain, stack = []) {
   const alerts = []
   const auditEvents = []
 
+  // Accumulate rows, then bulk-insert (hundreds of threat-intel findings would
+  // otherwise mean hundreds of sequential D1 round-trips and time out the scan).
+  const findingRows = []
+  const alertRows = []
+  const auditRows = []
+
+  // Path 3: threat-intel correlation (live Threat-Scope feeds) — findings carry
+  // their own stable ids (ti_<cve>) so re-scans don't pile up duplicates.
+  const ti = await correlateThreats(tenantId, tenantName, stack)
+  for (const f of ti.findings || []) {
+    findingRows.push(f)
+    findings.push(f)
+    auditRows.push({
+      id: newId('evt'),
+      tenantId,
+      type: 'finding.created',
+      actor: 'threat-intel',
+      findingId: f.id,
+      approvalId: null,
+      metadata: { severity: f.severity, source: f.source, category: f.category },
+      ts: new Date().toISOString(),
+    })
+    if (f.severity === 'critical' || f.severity === 'high') {
+      const alert = {
+        id: newId('alt'),
+        tenantId,
+        findingId: f.id,
+        severity: f.severity,
+        status: 'unread',
+        message: `${f.severity.toUpperCase()}: ${f.title}`,
+        createdAt: new Date().toISOString(),
+        acknowledgedAt: null,
+        acknowledgedBy: null,
+      }
+      alertRows.push(alert)
+      alerts.push(alert)
+    }
+  }
+
   for (const r of raw) {
     const finding = {
       id: newId('fdg'),
@@ -271,9 +311,9 @@ export async function runPostureScan(tenantId, domain, stack = []) {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
-    await appendJSON('findings.json', finding)
+    findingRows.push(finding)
     findings.push(finding)
-    auditEvents.push({
+    auditRows.push({
       id: newId('evt'),
       tenantId,
       type: 'finding.created',
@@ -295,12 +335,15 @@ export async function runPostureScan(tenantId, domain, stack = []) {
         acknowledgedAt: null,
         acknowledgedBy: null,
       }
-      await appendJSON('alerts.json', alert)
+      alertRows.push(alert)
       alerts.push(alert)
     }
   }
 
-  for (const evt of auditEvents) await appendJSON('audit.json', evt)
+  // Single batched transaction per table.
+  await bulkInsert('findings.json', findingRows)
+  await bulkInsert('alerts.json', alertRows)
+  await bulkInsert('audit.json', auditRows)
 
   const summary = await aiSummary(tenantName, raw)
   if (summary) {
