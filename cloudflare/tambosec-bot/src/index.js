@@ -188,21 +188,21 @@ export default {
     setEnv(env)
     const { DB, BOT_TOKEN } = env
     const { results } = await DB.prepare(
-      `SELECT tenant_id, every_hours, next_run_at FROM schedules
-       WHERE enabled = 1 AND next_run_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
+      `SELECT tenantId, everyHours, nextRunAt FROM schedules
+       WHERE enabled = 1 AND nextRunAt <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
     ).all()
     for (const row of results || []) {
       const tenant = await DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?')
-        .bind(row.tenant_id).first()
+        .bind(row.tenantId).first()
       if (!tenant) continue
       const stack = tenant.stack // JSON string or array; runPostureScan parses it
       const { findings, alerts, summary } = await runPostureScan(tenant.id, tenant.domain || 'demo.local', stack)
       console.log('[scheduled] scanned', tenant.id, 'findings=', findings.length, 'alerts=', alerts.length)
     }
-    // advance next_run_at for processed schedules
+    // advance nextRunAt for processed schedules
     await DB.prepare(
-      `UPDATE schedules SET next_run_at = strftime('%Y-%m-%dT%H:%M:%SZ','now', (every_hours) || ' hours')
-       WHERE enabled = 1 AND next_run_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
+      `UPDATE schedules SET nextRunAt = strftime('%Y-%m-%dT%H:%M:%SZ','now', (everyHours) || ' hours')
+       WHERE enabled = 1 AND nextRunAt <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
     ).run()
   },
 }

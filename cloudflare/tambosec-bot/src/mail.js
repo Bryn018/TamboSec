@@ -58,7 +58,8 @@ const MAIL_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast'
 async function classifyEmail(msg) {
   if (!_env || !_env.AI) return { score: 0, disposition: 'delivered', reason: 'AI unavailable; delivered', summary: '', raw: '' }
   const prompt =
-    `You are a strict email phishing classifier. Output exactly one JSON line and nothing else.\n` +
+    `You are a strict email phishing classifier.\n` +
+    `Reply with ONLY a single JSON object and absolutely no other text, prose, or preamble.\n` +
     `Decide PHISHING or LEGITIMATE from STRUCTURAL signals only (not the brand name):\n` +
     `- urgency / threats to suspend or lock the account\n` +
     `- links to lookalike or unrelated domains, or bare IP links\n` +
@@ -70,15 +71,26 @@ async function classifyEmail(msg) {
     `FROM: ${msg.from}\nSUBJECT: ${msg.subject}\nBODY: ${msg.body.slice(0, 1500)}`
 
   try {
-    const res = await _env.AI.run(MAIL_MODEL, { prompt, max_tokens: 300 })
+    const res = await _env.AI.run(MAIL_MODEL, { prompt, max_tokens: 512 })
     let text = ''
     if (res) {
-      text = res.text || res.response || ''
-      if (!text && res.choices && res.choices[0]) {
-        const c = res.choices[0]
-        text = c.text || (c.message && c.message.content) || ''
+      // Workers AI response shape varies: {text}, {response}, {result},
+      // {choices:[{text|message.content}]}, or a raw string/object.
+      const pick = (v) => {
+        if (!v) return ''
+        if (typeof v === 'string') return v
+        if (Array.isArray(v) && typeof v[0] === 'string') return v[0]
+        if (v.response) return pick(v.response)
+        if (v.result) return pick(v.result)
+        if (Array.isArray(v.choices) && v.choices[0]) {
+          const c = v.choices[0]
+          return pick(c.text || (c.message && c.message.content) || c)
+        }
+        if (v.text) return pick(v.text)
+        // Fallback: serialize so extractJson can still find the embedded JSON.
+        return JSON.stringify(v)
       }
-      if (typeof text !== 'string') text = String(text)
+      text = pick(res)
     }
     text = (text || '').trim()
     const json = extractJson(text)
@@ -101,16 +113,44 @@ async function classifyEmail(msg) {
 
 function extractJson(text) {
   if (!text) return null
-  let t = text
+  let t = text.trim()
   // strip markdown code fences if present
   const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  if (fence) t = fence[1]
+  if (fence) t = fence[1].trim()
   // accept single-quoted JSON
   if (t.includes("'")) t = t.replace(/'/g, '"')
   const start = t.indexOf('{')
-  const end = t.lastIndexOf('}')
-  if (start === -1 || end === -1) return null
-  try { return JSON.parse(t.slice(start, end + 1)) } catch { return null }
+  if (start === -1) return null
+  // Brace-balance from the first '{' to capture the FIRST complete JSON object,
+  // ignoring any leader prose and any trailing commentary the model appends.
+  let depth = 0
+  let inStr = false
+  let esc = false
+  for (let i = start; i < t.length; i++) {
+    const ch = t[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (ch === '\\') esc = true
+      else if (ch === '"') inStr = false
+      continue
+    }
+    if (ch === '"') inStr = true
+    else if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) {
+        const candidate = t.slice(start, i + 1)
+        try { return JSON.parse(candidate) } catch { /* malformed; stop */ }
+        break
+      }
+    }
+  }
+  // Fallback: a truncated object (model ran out of tokens mid-JSON).
+  const slice = t.slice(start)
+  for (const c of [slice, slice + '}', slice + '"}']) {
+    try { return JSON.parse(c) } catch { /* try next */ }
+  }
+  return null
 }
 
 // ─── Telegram alert to the captured owner chat ───────────

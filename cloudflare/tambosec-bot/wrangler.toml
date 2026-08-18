@@ -35,6 +35,14 @@ DOH_URL = "https://cloudflare-dns.com/dns-query"
 # is reachable from this Worker; if unreachable at runtime we fall back to the D1 KEV cache.
 THREAT_SCOPE_URL = "https://threat-scope-sync.walybewillin.workers.dev"
 
+# Bound Threat-Scope KV namespace (SAME namespace Threat-Scope's own 6h cron
+# refreshes). Reading a bound KV is in-cluster, so Path 3 gets LIVE, always-fresh
+# intel with ZERO Worker->Worker egress (which Cloudflare blocks with 1042). D1
+# cache (scripts/refresh-threatintel.mjs) remains as an offline fallback.
+[[kv_namespaces]]
+binding = "THREAT_SCOPE"
+id = "e4896adb50fc4821909069f6b92b4175"
+
 # Dashboard + Copilot API token (set via `wrangler secret put DASHBOARD_TOKEN`).
 # Used to gate the /dashboard and /api/dashboard, /api/ask endpoints.
 # DASHBOARD_TOKEN is provided as a secret, not a plain var.

@@ -1,6 +1,6 @@
 import { appendJSON, readJSON, clearOpenForTenant, getKev, bulkInsert } from './storage.js'
 import { randomBytes } from 'node:crypto'
-import { correlateThreats } from './threatintel.js'
+import { correlateThreats, setIntelKV } from './threatintel.js'
 
 function newId(prefix) {
   return `${prefix}_${randomBytes(6).toString('hex')}`
@@ -8,7 +8,11 @@ function newId(prefix) {
 
 // Module-level env (set by the Worker on each request/scheduled run).
 let _env = null
-export function setEnv(env) { _env = env }
+export function setEnv(env) {
+  _env = env
+  // Share the bound Threat-Scope KV (live intel, zero egress) with Path 3.
+  if (env && env.THREAT_SCOPE) setIntelKV(env.THREAT_SCOPE)
+}
 
 // ─── Real checks (Cloudflare-only, no Google) ─────────────
 
