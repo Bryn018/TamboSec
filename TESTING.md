@@ -20,6 +20,9 @@ any deploy. No internal knowledge required — just follow the steps.
 
 1. **Open the bot in Telegram** and send `/start`.
    - Expect: a friendly welcome + "your role: owner" + pointers to `/help`.
+   - **If the bot does NOT reply at all:** run the diagnostic below before
+     assuming it's broken — 9 times out of 10 it's a fixable config issue, not
+     the code.
 2. **Send `/help`.**
    - Expect: commands grouped into Monitor & scan / Email / Copilot / Configure /
      Admin, with your role shown. This is your map if you get stuck.
@@ -101,6 +104,25 @@ curl https://tambosec-bot.walybewillin.workers.dev/health
 curl -I https://tambosec.insights.autos/ | head -1
 # -> HTTP/2 200
 ```
+
+### Telegram "bot doesn't reply" diagnostic (operator)
+
+`/setup` now returns Telegram's own webhook health. Call it (secret-gated) and
+read `webhook_info`:
+
+```
+curl -H "X-Telegram-Bot-Api-Secret-Token: <TELEGRAM_SECRET>" \
+  https://tambosec-bot.walybewillin.workers.dev/setup | python3 -m json.tool
+```
+
+- `pending_update_count: 0` and no `last_error_message` → Telegram IS delivering
+  your messages and getting 200. The problem is on the reply side.
+- If `last_error_message` mentions a **parse/entity/Markdown** error: the bot
+  now auto-retries as plain text (fixed), so it will reply.
+- If `last_error_message` is `Not Found` / `Unauthorized`: the webhook URL or
+  bot token changed — re-run `/setup` after a fresh deploy.
+- Watch live logs with `npx wrangler tail` — inbound messages and any
+  `sendMessage` failure are now logged (`[webhook]`, `[tg]`).
 
 The admin/verification endpoints (`/api/scan`, `/api/threattest`, `/api/corrtest`,
 `/api/classify`, `/api/mailtest`, `/setup`) are gated by the Telegram secret
