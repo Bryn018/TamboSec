@@ -31,9 +31,6 @@ crons = ["7 * * * *"]
 KEV_API_URL = "https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json"
 # Cloudflare DNS-over-HTTPS for SPF/DMARC/MX checks (no token needed)
 DOH_URL = "https://cloudflare-dns.com/dns-query"
-# Threat-Scope feed Worker (live KEV/EPSS/ATT&CK reused by Path 3). Cloudflare host
-# is reachable from this Worker; if unreachable at runtime we fall back to the D1 KEV cache.
-THREAT_SCOPE_URL = "https://threat-scope-sync.walybewillin.workers.dev"
 
 # Bound Threat-Scope KV namespace (SAME namespace Threat-Scope's own 6h cron
 # refreshes). Reading a bound KV is in-cluster, so Path 3 gets LIVE, always-fresh

@@ -294,7 +294,7 @@ async function route(token, update) {
         await reply(`🔒 \`/${command}\` requires *${minRole}* role. Your role: *${role}*.`)
         return
       }
-      await handleCommand({ command, args, reply, chatId, role, userId: String(chatId) })
+      await handleCommand({ command, args, reply, chatId, role, userId: String(chatId), env })
     } else {
       await reply('Send /start to see available commands.')
     }
@@ -309,6 +309,15 @@ const MIN_ROLE = {
   summary: 'viewer',
   maillog: 'viewer',
   threat: 'viewer',
+  tenants: 'viewer',
+  tenant: 'viewer',
+  findings: 'viewer',
+  finding: 'viewer',
+  alerts: 'viewer',
+  ack: 'viewer',
+  stack: 'viewer',
+  me: 'viewer',
+  dashboard: 'viewer',
   scan: 'analyst',
   setstack: 'analyst',
   schedule: 'admin',

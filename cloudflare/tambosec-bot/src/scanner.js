@@ -13,6 +13,7 @@ export function setEnv(env) {
   // Share the bound Threat-Scope KV (live intel, zero egress) with Path 3.
   if (env && env.THREAT_SCOPE) setIntelKV(env.THREAT_SCOPE)
 }
+export function getEnv() { return _env }
 
 // ─── Real checks (Cloudflare-only, no Google) ─────────────
 

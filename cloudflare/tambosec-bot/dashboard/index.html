@@ -5,39 +5,81 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>TamboSec Dashboard</title>
 <style>
-  :root { --bg:#0b1020; --panel:#141b2e; --ink:#e6ebf5; --muted:#8b97b0; --line:#22304d;
-          --crit:#ff5c7a; --high:#ff9f43; --med:#ffd23f; --low:#4cc9f0; --ok:#38d39f; }
-  * { box-sizing:border-box }
-  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
-  header { padding:18px 22px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; flex-wrap:wrap }
-  header h1 { font-size:18px; margin:0; letter-spacing:.3px }
-  .badge { font-size:11px; color:var(--muted); border:1px solid var(--line); padding:3px 8px; border-radius:999px }
-  main { padding:22px; max-width:1100px; margin:0 auto }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; margin-bottom:22px }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px }
-  .card .n { font-size:28px; font-weight:700 }
-  .card .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.5px }
-  .crit{color:var(--crit)} .high{color:var(--high)} .med{color:var(--med)} .low{color:var(--low)} .ok{color:var(--ok)}
-  section { margin-bottom:24px }
-  h2 { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin:0 0 10px }
-  table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden }
-  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top }
-  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase }
-  tr:last-child td { border-bottom:none }
-  .row { font-size:13px }
-  .pill { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted) }
-  .empty { color:var(--muted); padding:14px 4px }
-  footer { color:var(--muted); font-size:12px; padding:0 22px 30px; max-width:1100px; margin:0 auto }
-  code { background:#0e1530; padding:1px 5px; border-radius:5px; color:#bcd2ff }
-  .controls { display:flex; gap:8px; align-items:center; margin-left:auto; flex-wrap:wrap }
-  input { background:#0e1530; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:6px 10px; font:13px inherit }
-  .ask { width:100%; margin-top:8px; background:#0e1530; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:10px; font:13px inherit; resize:vertical; min-height:54px }
-  .answer { margin-top:10px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; white-space:pre-wrap }
+  :root {
+    --bg: #0a0e1a; --bg2: #0f1525; --panel: #151c2e; --panel2: #1b2438;
+    --ink: #e8edf7; --muted: #8a97b4; --line: #243049;
+    --crit: #ff5d73; --high: #ffa53e; --med: #ffd23f; --low: #45c9f0; --ok: #2fd39a;
+    --accent: #5b8def; --accent2: #8b5bef;
+    --shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box }
+  html, body { margin: 0; padding: 0 }
+  body {
+    background: radial-gradient(1200px 600px at 80% -10%, #1a2440 0%, var(--bg) 55%) fixed, var(--bg);
+    color: var(--ink);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    padding: 18px 26px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    background: rgba(15,21,37,.6); backdrop-filter: blur(8px);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .logo { width: 34px; height: 34px; border-radius: 9px; background: linear-gradient(135deg, var(--accent), var(--accent2)); display: grid; place-items: center; font-size: 18px; box-shadow: var(--shadow); }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: .3px; font-weight: 700 }
+  header h1 span { color: var(--muted); font-weight: 500 }
+  .badge { font-size: 11px; color: var(--muted); border: 1px solid var(--line); padding: 4px 10px; border-radius: 999px; background: var(--panel); }
+  .controls { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-wrap: wrap }
+  input {
+    background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+    border-radius: 9px; padding: 8px 12px; font: 13px inherit; outline: none; transition: border-color .15s;
+  }
+  input:focus { border-color: var(--accent) }
+  button {
+    background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; border: 0;
+    border-radius: 9px; padding: 8px 14px; font: 13px/1 inherit; font-weight: 600; cursor: pointer;
+    transition: transform .08s, filter .15s;
+  }
+  button:hover { filter: brightness(1.08) }
+  button:active { transform: translateY(1px) }
+  main { padding: 26px; max-width: 1140px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 16px; margin-bottom: 26px }
+  .card {
+    background: linear-gradient(180deg, var(--panel), var(--bg2)); border: 1px solid var(--line);
+    border-radius: 16px; padding: 18px; box-shadow: var(--shadow); position: relative; overflow: hidden;
+  }
+  .card::after { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: linear-gradient(90deg, var(--accent), var(--accent2)); opacity: .8 }
+  .card .n { font-size: 30px; font-weight: 800; letter-spacing: -.5px }
+  .card .l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .7px; margin-top: 4px }
+  .crit { color: var(--crit) } .high{ color: var(--high) } .med{ color: var(--med) } .low{ color: var(--low) } .ok{ color: var(--ok) }
+  section { margin-bottom: 28px }
+  h2 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin: 0 0 12px; font-weight: 700 }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; box-shadow: var(--shadow) }
+  table { width: 100%; border-collapse: collapse }
+  th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 13px }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; background: var(--panel2) }
+  tr:last-child td { border-bottom: none }
+  .pill { display: inline-block; font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: var(--bg2) }
+  .empty { color: var(--muted); padding: 18px 14px }
+  .row { font-size: 13px }
+  .ask {
+    width: 100%; margin-top: 10px; background: var(--bg2); border: 1px solid var(--line); color: var(--ink);
+    border-radius: 11px; padding: 12px; font: 13px inherit; resize: vertical; min-height: 58px; outline: none;
+  }
+  .ask:focus { border-color: var(--accent) }
+  .answer { margin-top: 12px; background: linear-gradient(180deg, var(--panel), var(--bg2)); border: 1px solid var(--line); border-radius: 14px; padding: 16px; white-space: pre-wrap; line-height: 1.6 }
+  .answer:empty { display: none }
+  footer { color: var(--muted); font-size: 12px; padding: 0 26px 36px; max-width: 1140px; margin: 0 auto; line-height: 1.7 }
+  code { background: #0e1530; padding: 1px 6px; border-radius: 6px; color: #bcd2ff; font-size: 12px }
+  .skeleton { color: var(--muted) }
+  @media (max-width: 560px) { header { padding: 14px; } main { padding: 16px } .controls { width: 100%; margin-left: 0 } }
 </style>
 </head>
 <body>
 <header>
-  <h1>🛡 TamboSec</h1>
+  <div class="logo">🛡</div>
+  <h1>TamboSec <span>· Security Posture</span></h1>
   <span class="badge" id="tenant">loading…</span>
   <span class="badge" id="clock"></span>
   <span class="controls">
@@ -47,24 +89,31 @@
   </span>
 </header>
 <main>
-  <div class="grid" id="cards"></div>
+  <div class="grid" id="cards">
+    <div class="card"><div class="n skeleton">···</div><div class="l">loading</div></div>
+  </div>
+
   <section>
     <h2>Top findings</h2>
-    <table><thead><tr><th>Severity</th><th>Finding</th><th>Source</th><th>CVE / EPSS</th></tr></thead>
-    <tbody id="rows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table>
+    <div class="panel">
+      <table><thead><tr><th>Severity</th><th>Finding</th><th>Source</th><th>CVE / EPSS</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody></table>
+    </div>
   </section>
+
   <section>
-    <h2>Security Copilot</h2>
-    <textarea id="askIn" class="ask" placeholder="Ask about this tenant's posture, e.g. 'Summarize our top critical risks'"></textarea>
-    <button id="askBtn">Ask</button>
-    <div id="answer" class="answer" style="display:none"></div>
+    <h2>🤖 Security Copilot</h2>
+    <div class="panel" style="padding:16px">
+      <textarea id="askIn" class="ask" placeholder="Ask about this tenant's posture — e.g. 'Summarize our top critical risks and what to fix first'"></textarea>
+      <button id="askBtn">Ask Copilot</button>
+      <div id="answer" class="answer"></div>
+    </div>
   </section>
 </main>
 <footer>
-  TamboSec Security Posture Dashboard · data pulled live from your Cloudflare D1 · powered by Workers AI.
+  TamboSec monitors your security posture, screens inbound email, and correlates your stack against live threat intel (CISA KEV, FIRST EPSS, MITRE ATT&CK) — all on Cloudflare. Data is pulled live from your D1 database.
 </footer>
 <script>
-  // API origin = the TamboSec Worker. Override with ?api=https://... if needed.
   const API = new URLSearchParams(location.search).get('api') || 'https://tambosec-bot.walybewillin.workers.dev';
   const $ = (id) => document.getElementById(id);
   function loadState() {
@@ -110,7 +159,7 @@
       ];
       $('cards').innerHTML = cards.map(c =>
         '<div class="card"><div class="n ' + (c[2] || '') + '">' + c[1] + '</div><div class="l">' + c[0] + '</div></div>').join('');
-      const rows = (d.findings || []).map(f => {
+      const rows = (d.findings || []).map((f) => {
         const sev = (f.severity || '').toLowerCase();
         const ce = (f.cve ? f.cve : '') + (f.epss != null ? ' · ' + Number(f.epss).toFixed(3) : '');
         return '<tr class="row"><td class="' + (sev === 'critical' ? 'crit' : sev === 'high' ? 'high' : sev === 'medium' ? 'med' : 'low') + '"><b>' + (f.severity || '') + '</b></td>' +
@@ -118,9 +167,10 @@
           '<td><span class="pill">' + (f.source || '') + '</span></td>' +
           '<td>' + (ce || '<span class="muted">—</span>') + '</td></tr>';
       }).join('');
-      $('rows').innerHTML = rows || '<tr><td colspan="4" class="empty">No findings for this tenant.</td></tr>';
+      $('rows').innerHTML = rows || '<tr><td colspan="4" class="empty">No findings for this tenant. Run a scan from Telegram with /scan ' + state.tenant + '</td></tr>';
     } catch (e) {
       $('tenant').textContent = 'auth error — set token';
+      $('rows').innerHTML = '<tr><td colspan="4" class="empty">Could not load data: ' + escapeHtml(e.message) + '</td></tr>';
     }
   }
 
@@ -128,7 +178,6 @@
     const q = $('askIn').value.trim();
     if (!q) return;
     const box = $('answer');
-    box.style.display = 'block';
     box.textContent = 'Thinking…';
     try {
       const d = await api('/api/ask&q=' + encodeURIComponent(q));
@@ -136,7 +185,7 @@
     } catch (e) { box.textContent = 'Error: ' + e.message; }
   };
 
-  function escapeHtml(s) { return String(s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
+  function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
   load(); setInterval(load, 60000);
 </script>
 </body>
