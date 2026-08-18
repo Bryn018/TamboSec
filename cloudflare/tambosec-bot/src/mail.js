@@ -1,10 +1,10 @@
 // Path 2 — AI Email Security Desk.
 // Receives inbound mail (delivered by Cloudflare Email Routing to this Worker),
 // classifies it as phishing/legit with Workers AI, then either re-sends the safe
-// message to the verified destination (EMAIL binding) or quarantines it (drops +
-// alerts the owner via Telegram). Every message is logged to D1 (mail_log).
+// message to the verified destination (EMAIL binding) or quarantines it (drops).
+// Every message is logged to D1 (mail_log) and shown in the web dashboard.
 //
-// No Google. Pure Cloudflare: Email Routing + Workers AI + D1 + Telegram.
+// No Google. Pure Cloudflare: Email Routing + Workers AI + D1.
 
 import { appendJSON, readJSON } from './storage.js'
 
@@ -153,27 +153,12 @@ function extractJson(text) {
   return null
 }
 
-// ─── Telegram alert to the captured owner chat ───────────
+// ─── Owner/operator notification ───────────────────────────
+// Telegram was removed; verdicts are surfaced in the web dashboard (mail_log
+// table) instead of being pushed to chat. Kept as a no-op log so the call
+// sites stay readable if a real notifier (email/Slack) is added later.
 async function alertOwner(env, text) {
-  const chatId = await getOwnerChat(env)
-  if (!chatId || !env.BOT_TOKEN) return
-  try {
-    await fetch('https://api.telegram.org/bot' + env.BOT_TOKEN + '/sendMessage', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
-    })
-  } catch (e) {
-    console.error('[mail] owner alert failed', e.message)
-  }
-}
-
-async function getOwnerChat(env) {
-  try {
-    const { data } = await readJSON('config.json')
-    const row = data.find((c) => c.key === 'owner_chat_id')
-    return row ? row.value : null
-  } catch { return null }
+  console.log('[mail] verdict:', text)
 }
 
 // ─── Public entrypoint, called by the Worker's email handler ──

@@ -1,64 +1,52 @@
 import { setDB, getDB } from './storage.js'
-import { setEnv } from './scanner.js'
-import { handleCommand, handleCallback } from './commands-core.js'
-import { runPostureScan } from './scanner.js'
+import { setEnv, runPostureScan, getEnv } from './scanner.js'
 import { handleInboundEmail, classifyText } from './mail.js'
 import { probeThreatScope, correlateThreats } from './threatintel.js'
 import { askCopilot } from './copilot.js'
-import { getDashboardData, dashboardHtml } from './dashboard.js'
-import { getUser, resolveRole, roleSatisfies, upsertUser, listUsers, seedOwnerFromConfig, ROLES, countUsers } from './storage.js'
+import { getDashboardData } from './dashboard.js'
 
-// ─── Telegram transport ────────────────────────────────────
-function tg(token, method, body = {}) {
-  return fetch('https://api.telegram.org/bot' + token + '/' + method, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then(async (r) => {
-    let data;
-    try { data = await r.json(); } catch { data = { ok: false, description: 'non-json response ' + r.status }; }
-    // Surface Telegram API errors instead of swallowing them — a failed
-    // sendMessage was the root cause of "bot doesn't reply, no error logged".
-    if (!data.ok) {
-      console.error('[tg] ' + method + ' failed', r.status, JSON.stringify(data).slice(0, 300));
-    }
-    return data;
+// JSON helper with CORS so the Pages dashboard can call the API cross-origin.
+// Endpoints stay token-gated (DASHBOARD_TOKEN) — CORS only relaxes the browser
+// same-origin check; it does not bypass auth.
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: {
+      'content-type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'content-type, x-tambosec-token',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    },
   })
 }
 
-function makeReply(token, chatId) {
-  return async (text, extra) => {
-    const base = Object.assign({ chat_id: chatId, text, parse_mode: 'Markdown' }, extra || {})
-    let res = await tg(token, 'sendMessage', base)
-    // Resilient fallback: if Telegram can't parse the Markdown entities (the
-    // classic cause of "bot sent nothing / no error"), retry as plain text so
-    // the user ALWAYS gets a reply instead of a silent failure.
-    if (!res.ok && /parse|entity|Markdown/i.test(res.description || '')) {
-      const plain = Object.assign({}, base)
-      delete plain.parse_mode
-      res = await tg(token, 'sendMessage', plain)
-    }
-    return res
-  }
+// Every API endpoint requires the DASHBOARD_TOKEN (passed as ?token= or the
+// X-TamboSec-Token header). The site is additionally wrapped in Cloudflare
+// Access, so this is defense-in-depth.
+function authErr() { return json({ error: 'unauthorized' }, 403) }
+function tokenOf(request, url) {
+  return url.searchParams.get('token') || request.headers.get('X-TamboSec-Token')
 }
+function authed(request, url, env) {
+  return tokenOf(request, url) === env.DASHBOARD_TOKEN
+}
+function q(request, url, name) { return url.searchParams.get(name) }
+function bodyJson(request) { return request.json().catch(() => ({})) }
 
-// ─── Request router ────────────────────────────────────────
 export default {
   async fetch(request, env) {
     setDB(env.DB)
     setEnv(env)
-    await seedOwnerFromConfig()
     const url = new URL(request.url)
 
-    // CORS preflight for the Pages dashboard (tambosec.insights.autos) calling
-    // the API cross-origin. Endpoints stay token-gated; this only adds headers.
+    // CORS preflight for the Pages dashboard.
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         status: 204,
         headers: {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Headers': 'content-type, x-tambosec-token',
-          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
           'Access-Control-Max-Age': '86400',
         },
       })
@@ -68,89 +56,90 @@ export default {
       return json({ ok: true, service: 'tambosec-bot' })
     }
 
-    // Admin / verification endpoint (also the future dashboard API).
-    // Gated by the same Telegram secret header.
-    if (request.method === 'GET' && url.pathname === '/api/scan') {
-      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_SECRET) {
-        return new Response('forbidden', { status: 403 })
-      }
-      const tenantId = url.searchParams.get('tenantId')
+    // All endpoints below are token-gated.
+    if (!authed(request, url, env)) return authErr()
+
+    if (request.method === 'GET' && url.pathname === '/api/dashboard') {
+      const tenantId = q(request, url, 'tenantId')
       if (!tenantId) return json({ error: 'tenantId required' }, 400)
-      const tenant = await env.DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?')
-        .bind(tenantId).first()
+      return json(await getDashboardData(tenantId))
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/tenants') {
+      const { results } = await env.DB.prepare('SELECT id, name, domain, stack, createdAt FROM tenants ORDER BY createdAt DESC').all()
+      return json({ tenants: (results || []).map((t) => ({ ...t, stack: safeStack(t.stack) })) })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/findings') {
+      const tenantId = q(request, url, 'tenantId')
+      const severity = q(request, url, 'severity')
+      if (!tenantId) return json({ error: 'tenantId required' }, 400)
+      let sql = 'SELECT * FROM findings WHERE tenantId = ?'
+      const binds = [tenantId]
+      if (severity) { sql += ' AND severity = ?'; binds.push(severity) }
+      sql += ' ORDER BY createdAt DESC LIMIT 200'
+      const { results } = await env.DB.prepare(sql).bind(...binds).all()
+      const rows = (results || []).map(rowToObj)
+      return json({ findings: rows })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/finding') {
+      const id = q(request, url, 'id')
+      if (!id) return json({ error: 'id required' }, 400)
+      const row = await env.DB.prepare('SELECT * FROM findings WHERE id = ?').bind(id).first()
+      if (!row) return json({ error: 'not found' }, 404)
+      return json({ finding: rowToObj(row) })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/alerts') {
+      const tenantId = q(request, url, 'tenantId')
+      if (!tenantId) return json({ error: 'tenantId required' }, 400)
+      const { results } = await env.DB.prepare(
+        'SELECT * FROM alerts WHERE tenantId = ? AND status = ? ORDER BY createdAt DESC'
+      ).bind(tenantId, 'unread').all()
+      return json({ alerts: (results || []).map(rowToObj) })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/maillog') {
+      const n = Math.min(Number(q(request, url, 'n')) || 20, 50)
+      const { results } = await env.DB.prepare('SELECT * FROM mail_log ORDER BY received_at DESC LIMIT ?').bind(n).all()
+      return json({ mail: (results || []).map(rowToObj) })
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/threat') {
+      const tenantId = q(request, url, 'tenantId')
+      const tenant = await env.DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?').bind(tenantId).first()
       if (!tenant) return json({ error: 'tenant not found' }, 404)
-      const stack = tenant.stack // may be JSON string; runPostureScan parses it
-      try {
-        const result = await runPostureScan(tenant.id, tenant.domain || 'demo.local', stack)
-        return json({ tenant: tenant.name, domain: tenant.domain, ...result })
-      } catch (e) {
-        return json({ error: String(e.message || e), stack: e.stack }, 500)
-      }
+      const stack = safeStack(tenant.stack)
+      if (!stack.length) return json({ error: 'set a stack first (/api/setstack)' }, 400)
+      const ti = await correlateThreats(tenant.id, tenant.name, stack)
+      return json({ tenant: tenant.name, stack, intel_source: ti.meta?.kev_source, findings: ti.findings })
     }
 
-    // Classify a sample email with Workers AI (Path 2 verification endpoint).
-    // Usage: /api/classify?from=...&subject=...&body=...  (secret-gated)
-    if (request.method === 'GET' && url.pathname === '/api/classify') {
-      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_SECRET) {
-        return new Response('forbidden', { status: 403 })
-      }
-      const from = url.searchParams.get('from') || 'unknown@unknown'
-      const subject = url.searchParams.get('subject') || ''
-      const body = url.searchParams.get('body') || ''
-      if (!subject && !body) return json({ error: 'provide subject and/or body' }, 400)
-      const cls = await classifyText(from, subject, body, env)
-      return json(cls)
-    }
-
-    // Full email round-trip test (Path 2): builds a synthetic EmailMessage and
-    // runs the real handleInboundEmail (parse -> classify -> EMAIL.send -> D1 log).
-    // Secret-gated. Returns the decision + whether the forward fired.
-    if (request.method === 'GET' && url.pathname === '/api/mailtest') {
-      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_SECRET) {
-        return new Response('forbidden', { status: 403 })
-      }
-      const from = url.searchParams.get('from') || 'probe@external.test'
-      const subject = url.searchParams.get('subject') || 'Mail test'
-      const body = url.searchParams.get('body') || 'Test message body.'
-      const raw = `From: ${from}\r\nTo: secops@insights.autos\r\nSubject: ${subject}\r\nContent-Type: text/plain\r\n\r\n${body}`
-      // Minimal EmailMessage shape Cloudflare provides.
-      const message = { raw: new TextEncoder().encode(raw), from, to: 'secops@insights.autos' }
-      const forwarded = { fired: false }
-      const origSend = env.EMAIL && env.EMAIL.send
-      if (env.EMAIL) env.EMAIL.send = async (opts) => { forwarded.fired = true; return { ok: true } }
-      const result = await handleInboundEmail(message, env)
-      if (origSend) env.EMAIL.send = origSend
-      return json({ ...result, forwarded: forwarded.fired, destination: env.EMAIL && env.EMAIL.destination_address })
-    }
-
-    // Path 3 reachability probe: can this Worker reach the Threat-Scope feeds?
-    // Secret-gated. Confirms KEV/EPSS/ATT&CK are live (or reports fallback).
     if (request.method === 'GET' && url.pathname === '/api/threattest') {
-      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_SECRET) {
-        return new Response('forbidden', { status: 403 })
-      }
-      const probe = await probeThreatScope()
-      return json(probe)
+      return json(await probeThreatScope())
     }
 
-    // Path 3 correlation test (no external fetch; reads D1 cache only).
     if (request.method === 'GET' && url.pathname === '/api/corrtest') {
-      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_SECRET) {
-        return new Response('forbidden', { status: 403 })
-      }
-      const stack = (url.searchParams.get('stack') || 'wordpress,nginx,apache').split(',').map((s) => s.trim().toLowerCase())
+      const stack = (q(request, url, 'stack') || 'wordpress,nginx,apache').split(',').map((s) => s.trim().toLowerCase())
       const ti = await correlateThreats('test', 'TestCorp', stack)
       const ids = ti.findings.map((f) => f.id)
-      const dups = ids.filter((id, i) => ids.indexOf(id) !== i)
-      return json({ count: ti.findings.length, uniqueIds: new Set(ids).size, duplicates: [...new Set(dups)], sample: ti.findings.slice(0, 5) })
+      return json({ count: ti.findings.length, uniqueIds: new Set(ids).size, duplicates: ids.filter((id, i) => ids.indexOf(id) !== i), sample: ti.findings.slice(0, 5) })
     }
 
-    // Path 4 — Security Copilot (token-gated API). Grounded in tenant data.
+    // ─── Scan (POST) ─────────────────────────────────────
+    if (request.method === 'POST' && url.pathname === '/api/scan') {
+      const tenantId = q(request, url, 'tenantId')
+      const tenant = await env.DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?').bind(tenantId).first()
+      if (!tenant) return json({ error: 'tenant not found' }, 404)
+      const result = await runPostureScan(tenant.id, tenant.domain || 'demo.local', tenant.stack)
+      return json({ tenant: tenant.name, domain: tenant.domain, ...result })
+    }
+
+    // ─── Ask the Security Copilot (GET) ─────────────────
     if (request.method === 'GET' && url.pathname === '/api/ask') {
-      const token = url.searchParams.get('token') || request.headers.get('X-TamboSec-Token')
-      if (token !== env.DASHBOARD_TOKEN) return new Response('forbidden', { status: 403 })
-      const tenantId = url.searchParams.get('tenantId')
-      const question = url.searchParams.get('q') || ''
+      const tenantId = q(request, url, 'tenantId')
+      const question = q(request, url, 'q') || ''
       if (!tenantId || !question) return json({ error: 'tenantId and q required' }, 400)
       const tenant = await env.DB.prepare('SELECT id, name FROM tenants WHERE id = ?').bind(tenantId).first()
       if (!tenant) return json({ error: 'tenant not found' }, 404)
@@ -158,50 +147,92 @@ export default {
       return json(ans)
     }
 
-    // Path 4 — Dashboard JSON feed (token-gated).
-    if (request.method === 'GET' && url.pathname === '/api/dashboard') {
-      const token = url.searchParams.get('token') || request.headers.get('X-TamboSec-Token')
-      if (token !== env.DASHBOARD_TOKEN) return new Response('forbidden', { status: 403 })
-      const tenantId = url.searchParams.get('tenantId')
+    // ─── Summary (GET) ───────────────────────────────────
+    if (request.method === 'GET' && url.pathname === '/api/summary') {
+      const tenantId = q(request, url, 'tenantId')
       if (!tenantId) return json({ error: 'tenantId required' }, 400)
-      const data = await getDashboardData(tenantId)
-      return json(data)
+      const { results } = await env.DB.prepare('SELECT text FROM summaries WHERE tenantId = ? ORDER BY createdAt DESC LIMIT 1').bind(tenantId).all()
+      return json({ summary: (results && results[0] && results[0].text) || null })
     }
 
-    // Path 4 — Dashboard HTML view (token-gated via ?token=).
-    if (request.method === 'GET' && url.pathname === '/dashboard') {
-      const token = url.searchParams.get('token') || request.headers.get('X-TamboSec-Token')
-      if (token !== env.DASHBOARD_TOKEN) return new Response('forbidden', { status: 403 })
-      return new Response(dashboardHtml(), { headers: { 'content-type': 'text/html; charset=utf-8' } })
+    // ─── Set stack (POST) ────────────────────────────────
+    if (request.method === 'POST' && url.pathname === '/api/setstack') {
+      const b = await bodyJson(request)
+      const tenantId = b.tenantId || q(request, url, 'tenantId')
+      const stack = (b.stack || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+      if (!tenantId || !stack.length) return json({ error: 'tenantId and stack required' }, 400)
+      const existing = await env.DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?').bind(tenantId).first()
+      if (!existing) return json({ error: 'tenant not found' }, 404)
+      await env.DB.prepare('UPDATE tenants SET stack = ? WHERE id = ?').bind(JSON.stringify(stack), tenantId).run()
+      await logAudit(env, tenantId, 'tenant.stack.updated', { stack })
+      return json({ ok: true, stack })
     }
 
-    // One-time webhook registration (call this once after deploy).
-    if (request.method === 'GET' && url.pathname === '/setup') {
-      const hook = url.origin + '/telegram'
-      const res = await tg(env.BOT_TOKEN, 'setWebhook', {
-        url: hook,
-        secret_token: env.TELEGRAM_SECRET,
-        allowed_updates: ['message', 'callback_query'],
-      })
-      // Surface Telegram's own delivery diagnostics (last error, pending
-      // backlog) so a "bot doesn't respond" report is debuggable at a glance.
-      const info = await tg(env.BOT_TOKEN, 'getWebhookInfo')
-      return json({ ok: res.ok, result: res, webhook_url: hook, webhook_info: info })
-    }
-
-    // Telegram webhook endpoint.
-    if (request.method === 'POST' && url.pathname === '/telegram') {
-      const secret = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
-      if (secret !== env.TELEGRAM_SECRET) return new Response('forbidden', { status: 403 })
-      const update = await request.json().catch(() => null)
-      if (!update) return new Response('bad request', { status: 400 })
-
-      try {
-        await route(token(env), update)
-      } catch (e) {
-        console.error('[webhook] error', e.message)
+    // ─── Schedule (GET view + POST set) ──────────────────
+    if (url.pathname === '/api/schedule') {
+      const tenantId = q(request, url, 'tenantId') || (await bodyJson(request)).tenantId
+      if (!tenantId) return json({ error: 'tenantId required' }, 400)
+      if (request.method === 'GET') {
+        const row = await env.DB.prepare('SELECT * FROM schedules WHERE tenantId = ?').bind(tenantId).first()
+        return json({ schedule: row || null })
       }
-      return new Response('ok', { status: 200 }) // always ack Telegram fast
+      const b = await bodyJson(request)
+      const everyHours = Number(b.everyHours || q(request, url, 'hours'))
+      if (!Number.isFinite(everyHours) || everyHours < 1 || everyHours > 168) return json({ error: 'hours must be 1-168' }, 400)
+      await env.DB.prepare(
+        `INSERT INTO schedules (tenantId, everyHours, enabled, nextRunAt, updatedAt, updatedBy)
+         VALUES (?, ?, 1, strftime('%Y-%m-%dT%H:%M:%SZ','now', (? ) || ' hours'), strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'web')
+         ON CONFLICT(tenantId) DO UPDATE SET everyHours=excluded.everyHours, enabled=1, nextRunAt=excluded.nextRunAt, updatedAt=excluded.updatedAt, updatedBy='web'`
+      ).bind(tenantId, everyHours, everyHours).run()
+      await logAudit(env, tenantId, 'scan.schedule.updated', { everyHours })
+      return json({ ok: true, everyHours })
+    }
+
+    // ─── Remediate request (POST) ────────────────────────
+    if (request.method === 'POST' && url.pathname === '/api/remediate') {
+      const b = await bodyJson(request)
+      const { tenantId, findingId, actionType } = b
+      const allowed = ['force_password_reset', 'revoke_admin_role', 'revoke_active_sessions']
+      if (!tenantId || !findingId || !allowed.includes(actionType)) return json({ error: 'need tenantId, findingId, actionType(' + allowed.join('|') + ')' }, 400)
+      const finding = await env.DB.prepare('SELECT id FROM findings WHERE id = ? AND tenantId = ?').bind(findingId, tenantId).first()
+      if (!finding) return json({ error: 'finding not found' }, 404)
+      const id = 'apr_' + crypto.randomUUID().slice(0, 8)
+      await env.DB.prepare(
+        `INSERT INTO approvals (id, tenantId, findingId, actionType, reason, status, requestedAt, decidedAt, decisionBy)
+         VALUES (?, ?, ?, ?, 'Requested via web', 'pending', strftime('%Y-%m-%dT%H:%M:%SZ','now'), NULL, NULL)`
+      ).bind(id, tenantId, findingId, actionType).run()
+      await logAudit(env, tenantId, 'remediation.requested', { actionType, approvalId: id })
+      return json({ ok: true, approvalId: id })
+    }
+
+    // ─── Approvals (GET list + POST decide) ──────────────
+    if (url.pathname === '/api/approvals') {
+      const tenantId = q(request, url, 'tenantId') || (await bodyJson(request)).tenantId
+      if (!tenantId) return json({ error: 'tenantId required' }, 400)
+      if (request.method === 'GET') {
+        const { results } = await env.DB.prepare('SELECT * FROM approvals WHERE tenantId = ? ORDER BY requestedAt DESC').bind(tenantId).all()
+        return json({ approvals: (results || []).map(rowToObj) })
+      }
+      const b = await bodyJson(request)
+      const { approvalId, decision } = b
+      if (!approvalId || !['approve', 'reject'].includes(decision)) return json({ error: 'need approvalId and decision(approve|reject)' }, 400)
+      const status = decision === 'approve' ? 'approved' : 'rejected'
+      await env.DB.prepare("UPDATE approvals SET status = ?, decidedAt = strftime('%Y-%m-%dT%H:%M:%SZ','now'), decisionBy = 'web' WHERE id = ?")
+        .bind(status, approvalId).run()
+      await logAudit(env, tenantId, 'remediation.' + status, { approvalId })
+      return json({ ok: true, status })
+    }
+
+    // ─── Mail classify test (POST) ───────────────────────
+    if (request.method === 'POST' && url.pathname === '/api/classify') {
+      const b = await bodyJson(request)
+      const cls = await classifyText(b.from || 'unknown@unknown', b.subject || '', b.body || '', env)
+      return json(cls)
+    }
+
+    // ─── Dashboard HTML fallback (also served from Pages) ─
+    if (request.method === 'GET' && url.pathname === '/dashboard') {
+      return new Response('', { status: 302, headers: { 'Location': 'https://tambosec.insights.autos/' } })
     }
 
     return new Response('not found', { status: 404 })
@@ -216,27 +247,23 @@ export default {
     } catch (e) {
       console.error('[email] handler error', e.message)
     }
-    // Acknowledge so Email Routing records the message as processed.
   },
 
   // Cron: hourly scheduled posture scans.
   async scheduled(event, env, ctx) {
     setDB(env.DB)
     setEnv(env)
-    const { DB, BOT_TOKEN } = env
+    const { DB } = env
     const { results } = await DB.prepare(
       `SELECT tenantId, everyHours, nextRunAt FROM schedules
        WHERE enabled = 1 AND nextRunAt <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
     ).all()
     for (const row of results || []) {
-      const tenant = await DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?')
-        .bind(row.tenantId).first()
+      const tenant = await DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?').bind(row.tenantId).first()
       if (!tenant) continue
-      const stack = tenant.stack // JSON string or array; runPostureScan parses it
-      const { findings, alerts, summary } = await runPostureScan(tenant.id, tenant.domain || 'demo.local', stack)
+      const { findings, alerts, summary } = await runPostureScan(tenant.id, tenant.domain || 'demo.local', tenant.stack)
       console.log('[scheduled] scanned', tenant.id, 'findings=', findings.length, 'alerts=', alerts.length)
     }
-    // advance nextRunAt for processed schedules
     await DB.prepare(
       `UPDATE schedules SET nextRunAt = strftime('%Y-%m-%dT%H:%M:%SZ','now', (everyHours) || ' hours')
        WHERE enabled = 1 AND nextRunAt <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
@@ -244,121 +271,21 @@ export default {
   },
 }
 
-function token(env) { return env.BOT_TOKEN }
-
-// Persist the owner's Telegram chat id in the config table so Path 2 email
-// alerts can be pushed there. Captured ONLY on the first message (bootstrap
-// owner); later messages must NOT overwrite it, or RBAC breaks (whoever
-// messaged last would become the "owner" via resolveRole's config fallback).
-async function rememberOwnerChat(chatId) {
+// ─── helpers ───────────────────────────────────────────────
+function safeStack(s) {
+  if (!s) return []
+  try { return JSON.parse(s) } catch { return String(s).split(',').map((x) => x.trim()) }
+}
+function rowToObj(row) {
+  if (!row) return row
+  const out = { ...row }
+  if (typeof out.metadata === 'string') { try { out.metadata = JSON.parse(out.metadata) } catch { out.metadata = {} } }
+  return out
+}
+async function logAudit(env, tenantId, type, metadata) {
   try {
-    const db = getDB()
-    if (!db) return
-    await db
-      .prepare(
-        `INSERT INTO config (key, value) VALUES ('owner_chat_id', ?)
-         ON CONFLICT(key) DO NOTHING`
-      )
-      .bind(String(chatId))
-      .run()
-  } catch (e) {
-    console.error('[chat] remember failed', e.message)
-  }
-}
-
-async function route(token, update) {
-  if (update.callback_query) {
-    const cq = update.callback_query
-    const chatId = cq.message.chat.id
-    const reply = makeReply(token, chatId)
-    await handleCallback({
-      reply,
-      editMessage: (suffix) =>
-        tg(token, 'editMessageText', {
-          chat_id: chatId,
-          message_id: cq.message.message_id,
-          text: cq.message.text + '\n\n_' + suffix + '_',
-          parse_mode: 'Markdown',
-        }),
-      answerCallback: (text) =>
-        tg(token, 'answerCallbackQuery', { callback_query_id: cq.id, text }),
-      callbackData: cq.data,
-      chatId,
-    })
-    return
-  }
-  if (update.message && update.message.text) {
-    const msg = update.message
-    const chatId = msg.chat.id
-    const reply = makeReply(token, chatId)
-    console.log('[webhook] message from', chatId, 'text=', JSON.stringify(msg.text).slice(0, 80))
-    // Remember the owner's chat so email alerts (Path 2) can reach them.
-    await rememberOwnerChat(chatId)
-    // Path 4 RBAC: resolve role. Bootstrap: if no users exist yet, the first
-    // person to message becomes the owner (standard zero-config setup).
-    const existing = await getUser(chatId)
-    if (!existing) {
-      const total = await countUsers()
-      const role = total === 0 ? 'owner' : (await resolveRole(chatId) || null)
-      if (!role) {
-        await reply('🔒 You are not registered. Ask the TamboSec owner to run /grant <your-chat-id> <role>.')
-        return
-      }
-      await upsertUser(chatId, null, role, null)
-    }
-    const role = await resolveRole(chatId)
-    const text = msg.text
-    if (text.startsWith('/')) {
-      const parts = text.slice(1).split(/\s+/)
-      const command = parts[0].toLowerCase()
-      const args = parts.slice(1)
-      // Enforce role minimums per command.
-      const minRole = MIN_ROLE[command] || 'viewer'
-      if (!roleSatisfies(role, minRole)) {
-        await reply(`🔒 \`/${command}\` requires *${minRole}* role. Your role: *${role}*.`)
-        return
-      }
-      await handleCommand({ command, args, reply, chatId, role, userId: String(chatId), env })
-    } else {
-      await reply('Send /start to see available commands.')
-    }
-  }
-}
-
-// Minimum role required per Telegram command (Path 4 RBAC).
-const MIN_ROLE = {
-  start: 'viewer',
-  help: 'viewer',
-  ask: 'viewer',
-  summary: 'viewer',
-  maillog: 'viewer',
-  threat: 'viewer',
-  tenants: 'viewer',
-  tenant: 'viewer',
-  findings: 'viewer',
-  finding: 'viewer',
-  alerts: 'viewer',
-  ack: 'viewer',
-  stack: 'viewer',
-  me: 'viewer',
-  dashboard: 'viewer',
-  scan: 'analyst',
-  setstack: 'analyst',
-  schedule: 'admin',
-  grant: 'owner',
-  users: 'admin',
-  revoke: 'owner',
-}
-
-function json(obj) {
-  return new Response(JSON.stringify(obj), {
-    headers: {
-      'content-type': 'application/json',
-      // Allow the Pages dashboard (tambosec.insights.autos) to call the API
-      // cross-origin. Endpoints remain token-gated (DASHBOARD_TOKEN).
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'content-type, x-tambosec-token',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    },
-  })
+    await env.DB.prepare(
+      "INSERT INTO audit (id, tenantId, type, actor, findingId, approvalId, metadata, ts) VALUES (?, ?, ?, 'web', NULL, NULL, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
+    ).bind('evt_' + crypto.randomUUID().slice(0, 8), tenantId, type, JSON.stringify(metadata || {})).run()
+  } catch (e) { console.error('[audit] log failed', e.message) }
 }
