@@ -1,4 +1,5 @@
 import { setDB } from './storage.js'
+import { setEnv } from './scanner.js'
 import { handleCommand, handleCallback } from './commands-core.js'
 import { runPostureScan } from './scanner.js'
 
@@ -20,10 +21,27 @@ function makeReply(token, chatId) {
 export default {
   async fetch(request, env) {
     setDB(env.DB)
+    setEnv(env)
     const url = new URL(request.url)
 
     if (request.method === 'GET' && url.pathname === '/health') {
       return json({ ok: true, service: 'tambosec-bot' })
+    }
+
+    // Admin / verification endpoint (also the future dashboard API).
+    // Gated by the same Telegram secret header.
+    if (request.method === 'GET' && url.pathname === '/api/scan') {
+      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_SECRET) {
+        return new Response('forbidden', { status: 403 })
+      }
+      const tenantId = url.searchParams.get('tenantId')
+      if (!tenantId) return json({ error: 'tenantId required' }, 400)
+      const tenant = await env.DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?')
+        .bind(tenantId).first()
+      if (!tenant) return json({ error: 'tenant not found' }, 404)
+      const stack = tenant.stack // may be JSON string; runPostureScan parses it
+      const result = await runPostureScan(tenant.id, tenant.domain || 'demo.local', stack)
+      return json({ tenant: tenant.name, domain: tenant.domain, ...result })
     }
 
     // One-time webhook registration (call this once after deploy).
@@ -58,17 +76,18 @@ export default {
   // Cron: hourly scheduled posture scans.
   async scheduled(event, env, ctx) {
     setDB(env.DB)
+    setEnv(env)
     const { DB, BOT_TOKEN } = env
     const { results } = await DB.prepare(
       `SELECT tenant_id, every_hours, next_run_at FROM schedules
        WHERE enabled = 1 AND next_run_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now')`
     ).all()
     for (const row of results || []) {
-      const tenant = await DB.prepare('SELECT id, name, domain FROM tenants WHERE id = ?')
+      const tenant = await DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?')
         .bind(row.tenant_id).first()
       if (!tenant) continue
-      const { findings, alerts } = await runPostureScan(tenant.id, tenant.domain || 'demo.local')
-      // notify the tenant owner chat if we can resolve one (best-effort)
+      const stack = tenant.stack // JSON string or array; runPostureScan parses it
+      const { findings, alerts, summary } = await runPostureScan(tenant.id, tenant.domain || 'demo.local', stack)
       console.log('[scheduled] scanned', tenant.id, 'findings=', findings.length, 'alerts=', alerts.length)
     }
     // advance next_run_at for processed schedules

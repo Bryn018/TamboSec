@@ -1,63 +1,88 @@
-CREATE TABLE IF NOT EXISTS tenants (
+DROP TABLE IF EXISTS tenants;
+DROP TABLE IF EXISTS findings;
+DROP TABLE IF EXISTS alerts;
+DROP TABLE IF EXISTS approvals;
+DROP TABLE IF EXISTS audit;
+DROP TABLE IF EXISTS schedules;
+DROP TABLE IF EXISTS summaries;
+
+CREATE TABLE tenants (
   id TEXT PRIMARY KEY,
   name TEXT,
   domain TEXT,
-  created_at TEXT
+  stack TEXT,
+  createdAt TEXT
 );
 
-CREATE TABLE IF NOT EXISTS findings (
+CREATE TABLE findings (
   id TEXT PRIMARY KEY,
-  tenant_id TEXT,
+  tenantId TEXT,
   title TEXT,
   severity TEXT,
   source TEXT,
   category TEXT,
   status TEXT,
   metadata TEXT,
-  created_at TEXT,
-  updated_at TEXT
+  createdAt TEXT,
+  updatedAt TEXT
 );
 
-CREATE TABLE IF NOT EXISTS alerts (
+CREATE TABLE alerts (
   id TEXT PRIMARY KEY,
-  tenant_id TEXT,
-  finding_id TEXT,
+  tenantId TEXT,
+  findingId TEXT,
   severity TEXT,
   status TEXT,
   message TEXT,
-  created_at TEXT,
-  acknowledged_at TEXT,
-  acknowledged_by TEXT
+  createdAt TEXT,
+  acknowledgedAt TEXT,
+  acknowledgedBy TEXT
 );
 
-CREATE TABLE IF NOT EXISTS approvals (
+CREATE TABLE approvals (
   id TEXT PRIMARY KEY,
-  tenant_id TEXT,
-  finding_id TEXT,
-  action_type TEXT,
+  tenantId TEXT,
+  findingId TEXT,
+  actionType TEXT,
   reason TEXT,
   status TEXT,
-  requested_at TEXT,
-  decided_at TEXT,
-  decision_by TEXT
+  requestedAt TEXT,
+  decidedAt TEXT,
+  decisionBy TEXT
 );
 
-CREATE TABLE IF NOT EXISTS audit (
+CREATE TABLE audit (
   id TEXT PRIMARY KEY,
-  tenant_id TEXT,
+  tenantId TEXT,
   type TEXT,
   actor TEXT,
-  finding_id TEXT,
-  approval_id TEXT,
+  findingId TEXT,
+  approvalId TEXT,
   metadata TEXT,
   ts TEXT
 );
 
-CREATE TABLE IF NOT EXISTS schedules (
-  tenant_id TEXT PRIMARY KEY,
-  every_hours INTEGER,
+CREATE TABLE schedules (
+  tenantId TEXT PRIMARY KEY,
+  everyHours INTEGER,
   enabled INTEGER,
-  next_run_at TEXT,
-  updated_at TEXT,
-  updated_by TEXT
+  nextRunAt TEXT,
+  updatedAt TEXT,
+  updatedBy TEXT
+);
+
+CREATE TABLE summaries (
+  id TEXT PRIMARY KEY,
+  tenantId TEXT,
+  text TEXT,
+  ts TEXT
+);
+
+CREATE TABLE kev (
+  cveID TEXT PRIMARY KEY,
+  vendorProject TEXT,
+  product TEXT,
+  vulnerabilityName TEXT,
+  shortDescription TEXT,
+  knownRansomwareCampaignUse TEXT
 );

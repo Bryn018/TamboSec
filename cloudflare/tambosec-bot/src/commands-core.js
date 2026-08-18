@@ -74,7 +74,8 @@ export async function cmdScan({ reply, args }) {
 
   await reply(`🔍 Running posture scan for *${tenant.name}*...`);
 
-  const { findings, alerts } = await runPostureScan(tenantId, tenant.domain || 'demo.local');
+  const stack = tenant.stack // JSON string or array; runPostureScan parses it
+  const { findings, alerts, summary } = await runPostureScan(tenantId, tenant.domain || 'demo.local', stack);
 
   let msg = `📊 *Scan Complete — ${tenant.name}*\n\n`;
   msg += `*Findings:* ${findings.length}\n`;
@@ -89,6 +90,10 @@ export async function cmdScan({ reply, args }) {
 
   if (alerts.length > 0) {
     msg += `\n⚠️ *${alerts.length} alert${alerts.length > 1 ? 's' : ''} generated* — check /alerts`;
+  }
+
+  if (summary) {
+    msg += `\n\n🤖 *Advisor:* ${summary}`;
   }
 
   await reply(msg);
@@ -326,6 +331,38 @@ export async function handleCallback({ reply, editMessage, answerCallback, callb
   }
 }
 
+// ─── /setstack ───────────────────────────────────────────
+export async function cmdSetStack({ reply, args }) {
+  if (args.length < 2) {
+    return reply('Usage: `/setstack <tenantId> <product1,product2,...>`\nExample: `/setstack tnt_abc nginx,wordpress,apache`\nUsed to check CISA KEV exposure against your tech stack.');
+  }
+  const tenantId = args[0];
+  const stack = args[1].split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+
+  const { data: tenants } = await readJSON('tenants.json');
+  const idx = tenants.findIndex((t) => t.id === tenantId);
+  if (idx === -1) return reply('❌ Tenant not found. Use `/tenants`.');
+
+  tenants[idx] = { ...tenants[idx], stack };
+  await writeJSON('tenants.json', tenants);
+  await appendJSON('audit.json', {
+    id: newId('evt'), tenantId, type: 'tenant.stack.updated', actor: 'telegram',
+    findingId: null, approvalId: null, metadata: { stack }, ts: new Date().toISOString(),
+  });
+  await reply(`🧩 Tech stack set for *${tenants[idx].name}*:\n\`${stack.join(', ')}\`\nRun /scan to check CISA KEV exposure.`);
+}
+
+// ─── /summary ─────────────────────────────────────────────
+export async function cmdSummary({ reply, args }) {
+  const tenantId = args[0];
+  if (!tenantId) return reply('Usage: `/summary <tenantId>`');
+
+  const { data: summaries } = await readJSON('summaries.json');
+  const items = summaries.filter((s) => s.tenantId === tenantId).slice(-1);
+  if (items.length === 0) return reply('No summary yet. Run `/scan` first.');
+  await reply(`🤖 *Advisor summary:*\n\n${items[0].text}`);
+}
+
 // ─── Command router ───────────────────────────────────────
 const commands = {
   start: cmdStart,
@@ -338,6 +375,8 @@ const commands = {
   approvals: cmdApprovals,
   audit: cmdAudit,
   schedule: cmdSchedule,
+  setstack: cmdSetStack,
+  summary: cmdSummary,
 };
 
 export async function handleCommand({ command, args, reply, chatId }) {

@@ -11,6 +11,7 @@ const TABLE = {
   'approvals.json': 'approvals',
   'audit.json': 'audit',
   'schedules.json': 'schedules',
+  'summaries.json': 'summaries',
 }
 
 function tableFor(fileName) {
@@ -97,6 +98,25 @@ export async function updateJSON(fileName, predicate, updater) {
 export async function queryJSON(fileName, predicate) {
   const { data } = await readJSON(fileName)
   return data.filter(predicate)
+}
+
+// Replace prior open findings + unread alerts for a tenant so each scan
+// is a fresh point-in-time snapshot (no duplicate pile-up).
+export async function clearOpenForTenant(tenantId) {
+  const db = getDB()
+  await db.prepare("DELETE FROM findings WHERE tenantId = ? AND status = 'open'").bind(tenantId).run()
+  await db.prepare("DELETE FROM alerts WHERE tenantId = ? AND status = 'unread'").bind(tenantId).run()
+  return true
+}
+
+// Load the cached CISA KEV catalog (populated out-of-band from this machine,
+// since the Worker cannot reliably fetch external hosts). Returns array of rows.
+export async function getKev() {
+  const db = getDB()
+  const { results } = await db.prepare(
+    'SELECT cveID, vendorProject, product, vulnerabilityName, shortDescription, knownRansomwareCampaignUse FROM kev'
+  ).all()
+  return results || []
 }
 
 // Module-level DB handle, injected by the Worker on each request.

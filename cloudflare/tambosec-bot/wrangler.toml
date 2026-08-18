@@ -2,16 +2,28 @@ name = "tambosec-bot"
 main = "src/index.js"
 compatibility_date = "2026-08-18"
 
-# D1 SQLite — replaces the old repo-JSON "database"
+# D1 SQLite — the bot's database (replaces repo-JSON storage)
 [[d1_databases]]
 binding = "DB"
 database_name = "tambosec-db"
 database_id = "e9fc521e-d803-4da7-8ebf-3e913bb9ee6e"
 
+# Workers AI — free-tier LLM for plain-language finding summaries
+[ai]
+binding = "AI"
+
 # Telegram pushes updates here; the bot replies instantly (no polling).
 # Hourly scheduled posture scans driven by each tenant's /schedule.
 [triggers]
 crons = ["7 * * * *"]
+
+[vars]
+# Authoritative CISA KEV catalog (official cisagov/kev-data GitHub mirror —
+# the raw.githubusercontent host is reachable from Workers; cisa.gov itself
+# blocks datacenter egress). Shape: { vulnerabilities: [...] }.
+KEV_API_URL = "https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json"
+# Cloudflare DNS-over-HTTPS for SPF/DMARC/MX checks (no token needed)
+DOH_URL = "https://cloudflare-dns.com/dns-query"
 
 # Secrets (set via `wrangler secret put`, never committed):
 #   BOT_TOKEN        — Telegram bot token from @BotFather
