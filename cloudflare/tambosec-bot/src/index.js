@@ -14,12 +14,32 @@ function tg(token, method, body = {}) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
-  }).then((r) => r.json())
+  }).then(async (r) => {
+    let data;
+    try { data = await r.json(); } catch { data = { ok: false, description: 'non-json response ' + r.status }; }
+    // Surface Telegram API errors instead of swallowing them — a failed
+    // sendMessage was the root cause of "bot doesn't reply, no error logged".
+    if (!data.ok) {
+      console.error('[tg] ' + method + ' failed', r.status, JSON.stringify(data).slice(0, 300));
+    }
+    return data;
+  })
 }
 
 function makeReply(token, chatId) {
-  return (text, extra) =>
-    tg(token, 'sendMessage', Object.assign({ chat_id: chatId, text, parse_mode: 'Markdown' }, extra || {}))
+  return async (text, extra) => {
+    const base = Object.assign({ chat_id: chatId, text, parse_mode: 'Markdown' }, extra || {})
+    let res = await tg(token, 'sendMessage', base)
+    // Resilient fallback: if Telegram can't parse the Markdown entities (the
+    // classic cause of "bot sent nothing / no error"), retry as plain text so
+    // the user ALWAYS gets a reply instead of a silent failure.
+    if (!res.ok && /parse|entity|Markdown/i.test(res.description || '')) {
+      const plain = Object.assign({}, base)
+      delete plain.parse_mode
+      res = await tg(token, 'sendMessage', plain)
+    }
+    return res
+  }
 }
 
 // ─── Request router ────────────────────────────────────────
@@ -163,7 +183,10 @@ export default {
         secret_token: env.TELEGRAM_SECRET,
         allowed_updates: ['message', 'callback_query'],
       })
-      return json({ ok: res.ok, result: res, webhook_url: hook })
+      // Surface Telegram's own delivery diagnostics (last error, pending
+      // backlog) so a "bot doesn't respond" report is debuggable at a glance.
+      const info = await tg(env.BOT_TOKEN, 'getWebhookInfo')
+      return json({ ok: res.ok, result: res, webhook_url: hook, webhook_info: info })
     }
 
     // Telegram webhook endpoint.
@@ -268,6 +291,7 @@ async function route(token, update) {
     const msg = update.message
     const chatId = msg.chat.id
     const reply = makeReply(token, chatId)
+    console.log('[webhook] message from', chatId, 'text=', JSON.stringify(msg.text).slice(0, 80))
     // Remember the owner's chat so email alerts (Path 2) can reach them.
     await rememberOwnerChat(chatId)
     // Path 4 RBAC: resolve role. Bootstrap: if no users exist yet, the first
