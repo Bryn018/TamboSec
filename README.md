@@ -11,11 +11,13 @@ access control — all served by a single Cloudflare Worker + D1 database.
 
 ## Why Cloudflare-only
 
-Everything runs on Cloudflare Workers, D1, Workers AI, Email Routing, and
-Cron Triggers. The worker cannot make subrequests to other hosts (Cloudflare
-egress is disabled), so all external threat intel (CISA KEV, FIRST.org EPSS,
-MITRE ATT&CK) is cached into D1 out-of-band by refresh scripts run from a
-trusted machine. No Google, no third-party APIs.
+Everything runs on Cloudflare Workers, D1, Workers AI, Email Routing, Pages, and
+Cron Triggers. Threat-intel correlation (Path 3) reads Threat-Scope's curated
+feeds — CISA KEV, FIRST.org EPSS, MITRE ATT&CK — from a **bound KV namespace**
+(shared with the Threat-Scope project). Reading a bound KV is in-cluster, so it
+needs no Worker→Worker subrequest and stays fresh automatically (Threat-Scope's
+own 6-hour cron refreshes it). The D1 cache remains as an offline fallback.
+No Google, no third-party APIs.
 
 ## Architecture
 
@@ -48,12 +50,16 @@ Cron Trigger `7 * * * *` runs posture scans for all scheduled tenants.
   (llama-3.3-70B); safe mail forwards to the owner, phishing is quarantined
   fail-closed. Events logged to D1.
 - **Path 3 — Threat-Intel Wrapper**: reuses Threat-Scope feeds (CISA KEV,
-  FIRST EPSS, MITRE ATT&CK) cached in D1. A tenant stack returns plain-language
-  findings like "Actively exploited vuln in your stack: CVE-…, EPSS 0.83,
-  chainable to RCE" with severity + ATT&CK technique.
+  FIRST EPSS, MITRE ATT&CK) from a **live bound KV namespace** (zero egress,
+  refreshed every 6h by Threat-Scope's own cron). A tenant stack returns
+  plain-language findings like "Actively exploited vuln in your stack: CVE-…,
+  EPSS 0.83, chainable to RCE" with severity + ATT&CK technique. D1 cache is
+  the offline fallback.
 - **Path 4 — Security Copilot + Dashboard + RBAC**: `/ask` answers grounded
-  ONLY in the tenant's own findings/mail (never invents facts); a self-contained
-  dark dashboard at `/dashboard`; role hierarchy owner>admin>analyst>viewer
+  ONLY in the tenant's own findings/mail (never invents facts); a dark dashboard
+  served both from the Worker at `/dashboard` and as a standalone Cloudflare
+  Pages site at **https://tambosec.insights.autos** (token + tenant id in the
+  UI, persisted to localStorage); role hierarchy owner>admin>analyst>viewer
   with per-command minimum-role enforcement.
 
 ## Project layout
@@ -70,11 +76,13 @@ tambosec/
       copilot.js               # Path 4 grounded Q&A
       dashboard.js             # Path 4 HTML + JSON feed
       storage.js               # D1 access + RBAC helpers
+    dashboard/
+      index.html               # Static dashboard deployed to Cloudflare Pages
     scripts/
-      refresh-kev.mjs          # populate D1 KEV cache (out-of-band)
-      refresh-threatintel.mjs  # populate D1 EPSS/ATT&CK cache (out-of-band)
+      refresh-kev.mjs          # populate D1 KEV cache (offline fallback)
+      refresh-threatintel.mjs  # populate D1 EPSS/ATT&CK cache (offline fallback)
     schema.sql                 # D1 schema
-    wrangler.toml              # bindings: D1, AI, EMAIL, cron, secrets
+    wrangler.toml              # bindings: D1, AI, EMAIL, KV, cron, secrets
   bot/  apps/  data/  docs/    # earlier scaffolding (not the deployed path)
 ```
 
@@ -119,26 +127,32 @@ tambosec/
 
 All four paths verified live against the deployed worker:
 
-- Posture scan: 200, 486 findings + AI summary, persisted to D1.
+- Posture scan: 200, findings + AI summary, persisted to D1.
 - Email desk: legit → delivered/forwarded; phishing → quarantined (fail-closed).
-- Threat-intel: D1 cache KEV 1666 / EPSS 1666 / ATT&CK 222; 358 correlation
-  findings, 0 duplicate IDs.
+  Verified across 6 live `/api/mailtest` round-trips.
+- Threat-intel: **live bound KV** (intel_source=`live-kv`), KEV 1670 / EPSS 1670 /
+  ATT&CK 222; correlation findings produced for `tnt_real` (0 duplicate IDs).
 - Copilot: grounded answers (`grounded=true`).
-- Dashboard: 403 without token, 200 with token.
-- RBAC: owner bootstrap, `/grant`, and command-level enforcement all proven
-  (a viewer's `/scan` is blocked; `/ask` allowed).
-- Cron `7 * * * *` active.
+- Dashboard: Worker `/dashboard` 403 without token, 200 with token; Pages site
+  **https://tambosec.insights.autos** serves 200 with CORS-enabled API calls.
+- RBAC: owner bootstrap, `/grant`, and command-level enforcement all proven.
+- Cron `7 * * * *` active; `tnt_real` scheduled (24h) and scanning.
+- Email Routing: `secops@insights.autos` → `tambosec-bot` worker, rule enabled,
+  zone status `ready`.
 
 ## Notes / gotchas
 
-- **Refresh the intel cache regularly** — findings are only as fresh as the last
-  `refresh-kev` / `refresh-threatintel` run. Automate it (cron on a trusted
-  host) for production.
+- **Dashboard** — served two ways: the Worker at `/dashboard?token=…`, and the
+  standalone Cloudflare Pages site **https://tambosec.insights.autos** (enter
+  tenant id + DASHBOARD_TOKEN in the UI; both persist in localStorage). The Pages
+  site calls the Worker API cross-origin (CORS enabled, still token-gated).
 - **Fail-closed email** — anything the model does not explicitly classify as
   `legitimate` is quarantined, so a misclassification never delivers a phish.
 - **First Telegram message = owner** — bootstrap is zero-config; afterwards
   use `/grant` to add your team.
-- **No external egress from the worker** — all cross-service data lives in D1.
+- **Threat-intel is live via bound KV** — no out-of-band refresh needed; the D1
+  cache (`scripts/refresh-threatintel.mjs`) is only a fallback if the KV binding
+  is absent.
 
 ## Tech stack
 

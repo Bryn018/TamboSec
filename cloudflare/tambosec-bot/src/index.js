@@ -30,6 +30,20 @@ export default {
     await seedOwnerFromConfig()
     const url = new URL(request.url)
 
+    // CORS preflight for the Pages dashboard (tambosec.insights.autos) calling
+    // the API cross-origin. Endpoints stay token-gated; this only adds headers.
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': 'content-type, x-tambosec-token',
+          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Max-Age': '86400',
+        },
+      })
+    }
+
     if (request.method === 'GET' && url.pathname === '/health') {
       return json({ ok: true, service: 'tambosec-bot' })
     }
@@ -305,6 +319,13 @@ const MIN_ROLE = {
 
 function json(obj) {
   return new Response(JSON.stringify(obj), {
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      // Allow the Pages dashboard (tambosec.insights.autos) to call the API
+      // cross-origin. Endpoints remain token-gated (DASHBOARD_TOKEN).
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'content-type, x-tambosec-token',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    },
   })
 }
