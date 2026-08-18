@@ -132,19 +132,30 @@ export function getDB() {
 
 // Bulk insert many rows into a table in a single transaction (avoids the
 // per-row round-trip cost of appendJSON when a scan yields hundreds of rows).
+// Defensive: dedupe by `id` (a stray duplicate must never 500 the whole scan)
+// and use INSERT OR IGNORE so re-scans of a tenant never collide with rows
+// that clearOpenForTenant didn't catch.
 export async function bulkInsert(fileName, rows) {
   const db = getDB()
   const table = tableFor(fileName)
   if (!rows.length) return 0
+  const seen = new Set()
   const CHUNK = 200
   let inserted = 0
   for (let i = 0; i < rows.length; i += CHUNK) {
-    const slice = rows.slice(i, i + CHUNK)
+    const slice = rows.slice(i, i + CHUNK).filter((item) => {
+      const id = item && item.id
+      if (id == null) return true
+      if (seen.has(id)) return false
+      seen.add(id)
+      return true
+    })
+    if (!slice.length) continue
     const stmts = slice.map((item) => {
       const r = objToRow(item)
       const cols = Object.keys(r)
       const placeholders = cols.map(() => '?').join(',')
-      return db.prepare(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`).bind(...cols.map((c) => r[c]))
+      return db.prepare(`INSERT OR IGNORE INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`).bind(...cols.map((c) => r[c]))
     })
     await db.batch(stmts)
     inserted += slice.length
@@ -210,7 +221,10 @@ export function roleSatisfies(role, minRole) {
   return have >= need
 }
 
-// Seed the owner from config (idempotent) — call once at startup.
+// Seed the owner from config (idempotent) — run at startup. Only CREATES the
+// owner user if no row exists for the config chat; it never demotes or
+// promotes an existing user (that would let rememberOwnerChat's legacy
+// Path-2 capture accidentally re-grant owner to whoever messaged last).
 export async function seedOwnerFromConfig() {
   try {
     const db = getDB()
@@ -221,8 +235,6 @@ export async function seedOwnerFromConfig() {
     if (!existing) {
       await upsertUser(chatId, null, 'owner', null)
       console.log('[rbac] seeded owner from config:', chatId)
-    } else if (existing.role !== 'owner') {
-      await upsertUser(chatId, existing.tenantId, 'owner', existing.name)
     }
   } catch (e) {
     console.error('[rbac] seed failed', e.message)

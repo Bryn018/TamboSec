@@ -46,8 +46,12 @@ export default {
         .bind(tenantId).first()
       if (!tenant) return json({ error: 'tenant not found' }, 404)
       const stack = tenant.stack // may be JSON string; runPostureScan parses it
-      const result = await runPostureScan(tenant.id, tenant.domain || 'demo.local', stack)
-      return json({ tenant: tenant.name, domain: tenant.domain, ...result })
+      try {
+        const result = await runPostureScan(tenant.id, tenant.domain || 'demo.local', stack)
+        return json({ tenant: tenant.name, domain: tenant.domain, ...result })
+      } catch (e) {
+        return json({ error: String(e.message || e), stack: e.stack }, 500)
+      }
     }
 
     // Classify a sample email with Workers AI (Path 2 verification endpoint).
@@ -102,7 +106,9 @@ export default {
       }
       const stack = (url.searchParams.get('stack') || 'wordpress,nginx,apache').split(',').map((s) => s.trim().toLowerCase())
       const ti = await correlateThreats('test', 'TestCorp', stack)
-      return json({ count: ti.findings.length, meta: ti.meta, sample: ti.findings.slice(0, 5) })
+      const ids = ti.findings.map((f) => f.id)
+      const dups = ids.filter((id, i) => ids.indexOf(id) !== i)
+      return json({ count: ti.findings.length, uniqueIds: new Set(ids).size, duplicates: [...new Set(dups)], sample: ti.findings.slice(0, 5) })
     }
 
     // Path 4 — Security Copilot (token-gated API). Grounded in tenant data.
@@ -204,7 +210,9 @@ export default {
 function token(env) { return env.BOT_TOKEN }
 
 // Persist the owner's Telegram chat id in the config table so Path 2 email
-// alerts can be pushed there. Idempotent upsert.
+// alerts can be pushed there. Captured ONLY on the first message (bootstrap
+// owner); later messages must NOT overwrite it, or RBAC breaks (whoever
+// messaged last would become the "owner" via resolveRole's config fallback).
 async function rememberOwnerChat(chatId) {
   try {
     const db = getDB()
@@ -212,7 +220,7 @@ async function rememberOwnerChat(chatId) {
     await db
       .prepare(
         `INSERT INTO config (key, value) VALUES ('owner_chat_id', ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+         ON CONFLICT(key) DO NOTHING`
       )
       .bind(String(chatId))
       .run()
