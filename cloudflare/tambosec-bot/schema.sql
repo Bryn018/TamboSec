@@ -117,3 +117,13 @@ CREATE TABLE attack (
   name TEXT,
   description TEXT
 );
+
+-- Path 4: RBAC. Each Telegram user maps to a tenant + role.
+-- role ∈ owner | admin | analyst | viewer  (owner = global superuser)
+CREATE TABLE users (
+  id TEXT PRIMARY KEY,          -- Telegram chat id
+  tenantId TEXT,
+  role TEXT,
+  name TEXT,
+  createdAt TEXT
+);

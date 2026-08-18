@@ -33,8 +33,14 @@ export async function cmdStart({ reply }) {
     `/remediate <tenantId> <findingId> <action> — Request remediation\n` +
     `/approvals <tenantId> — View pending approvals\n` +
     `/audit <tenantId> — Recent audit events\n` +
-    `/schedule <tenantId> <hours> — Set scan schedule\n\n` +
-    `_All data stored in this repo as JSON files._`
+    `/schedule <tenantId> <hours> — Set scan schedule\n` +
+    `/setstack <tenantId> <p1,p2> — Set tech stack (for threat-intel)\n` +
+    `/threat <tenantId> — Threat-intel exposure (KEV/EPSS/ATT&CK)\n` +
+    `/ask <question> — 🤖 Security Copilot (ask about your posture)\n` +
+    `/maillog [n] — Email-security log\n` +
+    `/summary <tenantId> — Advisor summary\n\n` +
+    `_Owner only:_ /grant <chatId> <role>, /users, /revoke <chatId>\n\n` +
+    `_All data stored in Cloudflare D1 (no Google)._`
   );
 }
 
@@ -405,6 +411,71 @@ export async function cmdThreat({ reply, args }) {
   await reply(msg);
 }
 
+// ─── /ask (Path 4 — Security Copilot) ─────────────────────
+export async function cmdAsk({ reply, args, chatId, role }) {
+  const question = args.join(' ').trim()
+  if (!question) return reply('Usage: `/ask <your security question>`\nExample: `/ask Which of my findings are actively exploited?`')
+  await reply('🤖 Thinking…')
+  // The Copilot grounds on the requester's own tenant(s). Owners see all; for
+  // now a user is scoped to their own tenant (or the first tenant if viewer).
+  const tenantId = await resolveCopilotTenant(chatId, role)
+  if (!tenantId) return reply('No tenant associated with your account. Ask the owner to grant you one.')
+  const { getDB } = await import('./storage.js')
+  const db = getDB()
+  const tenant = await db.prepare('SELECT id, name FROM tenants WHERE id = ?').bind(tenantId).first()
+  const { askCopilot } = await import('./copilot.js')
+  const ans = await askCopilot(question, tenantId, tenant ? tenant.name : tenantId, undefined)
+  await reply(`🤖 *Copilot*\n\n${ans.answer}`, { parse_mode: 'Markdown' })
+}
+
+async function resolveCopilotTenant(chatId, role) {
+  const { getDB } = await import('./storage.js')
+  const db = getDB()
+  if (role === 'owner') {
+    const t = await db.prepare('SELECT id FROM tenants LIMIT 1').first()
+    return t ? t.id : 'tnt_real'
+  }
+  const u = await db.prepare('SELECT tenantId FROM users WHERE id = ?').bind(String(chatId)).first()
+  if (u && u.tenantId) return u.tenantId
+  // fall back to config owner chat
+  const cfg = await db.prepare("SELECT value FROM config WHERE key = 'owner_chat_id'").first()
+  return cfg ? 'tnt_real' : null
+}
+
+// ─── /grant (Path 4 — RBAC, owner only) ──────────────────
+export async function cmdGrant({ reply, args }) {
+  if (args.length < 2) return reply('Usage: `/grant <chatId> <role>`\nRoles: viewer, analyst, admin, owner')
+  const chatId = args[0]
+  const role = args[1].toLowerCase()
+  const { ROLES, upsertUser, getDB } = await import('./storage.js')
+  if (!ROLES.includes(role)) return reply('❌ Invalid role. Use: ' + ROLES.join(', '))
+  // assign to the first tenant by default (owner can reassign)
+  const db = getDB()
+  const t = await db.prepare('SELECT id FROM tenants LIMIT 1').first()
+  const tenantId = t ? t.id : null
+  await upsertUser(chatId, tenantId, role, null)
+  await reply(`✅ Granted *${role}* to chat \`${chatId}\``)
+}
+
+// ─── /users (Path 4 — RBAC, admin+) ──────────────────────
+export async function cmdUsers({ reply }) {
+  const { listUsers } = await import('./storage.js')
+  const users = await listUsers()
+  if (!users.length) return reply('No users registered yet.')
+  const lines = users.map((u) => `• \`${u.id}\` — *${u.role}* ${u.tenantId ? '(tenant ' + u.tenantId + ')' : '(no tenant)'}`)
+  await reply(`*Registered users:*\n${lines.join('\n')}`)
+}
+
+// ─── /revoke (Path 4 — RBAC, owner only) ─────────────────
+export async function cmdRevoke({ reply, args }) {
+  if (args.length < 1) return reply('Usage: `/revoke <chatId>`')
+  const chatId = args[0]
+  const { getDB } = await import('./storage.js')
+  const db = getDB()
+  await db.prepare('DELETE FROM users WHERE id = ?').bind(String(chatId)).run()
+  await reply(`🗑 Revoked access for \`${chatId}\``)
+}
+
 // ─── Command router ───────────────────────────────────────
 const commands = {
   start: cmdStart,
@@ -421,10 +492,14 @@ const commands = {
   summary: cmdSummary,
   maillog: cmdMailLog,
   threat: cmdThreat,
+  ask: cmdAsk,
+  grant: cmdGrant,
+  users: cmdUsers,
+  revoke: cmdRevoke,
 };
 
-export async function handleCommand({ command, args, reply, chatId }) {
-  const fn = commands[command];
-  if (!fn) return reply('Unknown command. Use /start to see available commands.');
-  await fn({ reply, args, chatId });
+export async function handleCommand({ command, args, reply, chatId, role, userId }) {
+  const fn = commands[command]
+  if (!fn) return reply('Unknown command. Use /start to see available commands.')
+  await fn({ reply, args, chatId, role, userId })
 }

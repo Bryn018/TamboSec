@@ -4,6 +4,9 @@ import { handleCommand, handleCallback } from './commands-core.js'
 import { runPostureScan } from './scanner.js'
 import { handleInboundEmail, classifyText } from './mail.js'
 import { probeThreatScope, correlateThreats } from './threatintel.js'
+import { askCopilot } from './copilot.js'
+import { getDashboardData, dashboardHtml } from './dashboard.js'
+import { getUser, resolveRole, roleSatisfies, upsertUser, listUsers, seedOwnerFromConfig, ROLES, countUsers } from './storage.js'
 
 // ─── Telegram transport ────────────────────────────────────
 function tg(token, method, body = {}) {
@@ -24,6 +27,7 @@ export default {
   async fetch(request, env) {
     setDB(env.DB)
     setEnv(env)
+    await seedOwnerFromConfig()
     const url = new URL(request.url)
 
     if (request.method === 'GET' && url.pathname === '/health') {
@@ -99,6 +103,36 @@ export default {
       const stack = (url.searchParams.get('stack') || 'wordpress,nginx,apache').split(',').map((s) => s.trim().toLowerCase())
       const ti = await correlateThreats('test', 'TestCorp', stack)
       return json({ count: ti.findings.length, meta: ti.meta, sample: ti.findings.slice(0, 5) })
+    }
+
+    // Path 4 — Security Copilot (token-gated API). Grounded in tenant data.
+    if (request.method === 'GET' && url.pathname === '/api/ask') {
+      const token = url.searchParams.get('token') || request.headers.get('X-TamboSec-Token')
+      if (token !== env.DASHBOARD_TOKEN) return new Response('forbidden', { status: 403 })
+      const tenantId = url.searchParams.get('tenantId')
+      const question = url.searchParams.get('q') || ''
+      if (!tenantId || !question) return json({ error: 'tenantId and q required' }, 400)
+      const tenant = await env.DB.prepare('SELECT id, name FROM tenants WHERE id = ?').bind(tenantId).first()
+      if (!tenant) return json({ error: 'tenant not found' }, 404)
+      const ans = await askCopilot(question, tenant.id, tenant.name, env)
+      return json(ans)
+    }
+
+    // Path 4 — Dashboard JSON feed (token-gated).
+    if (request.method === 'GET' && url.pathname === '/api/dashboard') {
+      const token = url.searchParams.get('token') || request.headers.get('X-TamboSec-Token')
+      if (token !== env.DASHBOARD_TOKEN) return new Response('forbidden', { status: 403 })
+      const tenantId = url.searchParams.get('tenantId')
+      if (!tenantId) return json({ error: 'tenantId required' }, 400)
+      const data = await getDashboardData(tenantId)
+      return json(data)
+    }
+
+    // Path 4 — Dashboard HTML view (token-gated via ?token=).
+    if (request.method === 'GET' && url.pathname === '/dashboard') {
+      const token = url.searchParams.get('token') || request.headers.get('X-TamboSec-Token')
+      if (token !== env.DASHBOARD_TOKEN) return new Response('forbidden', { status: 403 })
+      return new Response(dashboardHtml(), { headers: { 'content-type': 'text/html; charset=utf-8' } })
     }
 
     // One-time webhook registration (call this once after deploy).
@@ -214,16 +248,51 @@ async function route(token, update) {
     const reply = makeReply(token, chatId)
     // Remember the owner's chat so email alerts (Path 2) can reach them.
     await rememberOwnerChat(chatId)
+    // Path 4 RBAC: resolve role. Bootstrap: if no users exist yet, the first
+    // person to message becomes the owner (standard zero-config setup).
+    const existing = await getUser(chatId)
+    if (!existing) {
+      const total = await countUsers()
+      const role = total === 0 ? 'owner' : (await resolveRole(chatId) || null)
+      if (!role) {
+        await reply('🔒 You are not registered. Ask the TamboSec owner to run /grant <your-chat-id> <role>.')
+        return
+      }
+      await upsertUser(chatId, null, role, null)
+    }
+    const role = await resolveRole(chatId)
     const text = msg.text
     if (text.startsWith('/')) {
       const parts = text.slice(1).split(/\s+/)
       const command = parts[0].toLowerCase()
       const args = parts.slice(1)
-      await handleCommand({ command, args, reply, chatId })
+      // Enforce role minimums per command.
+      const minRole = MIN_ROLE[command] || 'viewer'
+      if (!roleSatisfies(role, minRole)) {
+        await reply(`🔒 \`/${command}\` requires *${minRole}* role. Your role: *${role}*.`)
+        return
+      }
+      await handleCommand({ command, args, reply, chatId, role, userId: String(chatId) })
     } else {
       await reply('Send /start to see available commands.')
     }
   }
+}
+
+// Minimum role required per Telegram command (Path 4 RBAC).
+const MIN_ROLE = {
+  start: 'viewer',
+  help: 'viewer',
+  ask: 'viewer',
+  summary: 'viewer',
+  maillog: 'viewer',
+  threat: 'viewer',
+  scan: 'analyst',
+  setstack: 'analyst',
+  schedule: 'admin',
+  grant: 'owner',
+  users: 'admin',
+  revoke: 'owner',
 }
 
 function json(obj) {

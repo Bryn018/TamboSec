@@ -35,6 +35,10 @@ DOH_URL = "https://cloudflare-dns.com/dns-query"
 # is reachable from this Worker; if unreachable at runtime we fall back to the D1 KEV cache.
 THREAT_SCOPE_URL = "https://threat-scope-sync.walybewillin.workers.dev"
 
+# Dashboard + Copilot API token (set via `wrangler secret put DASHBOARD_TOKEN`).
+# Used to gate the /dashboard and /api/dashboard, /api/ask endpoints.
+# DASHBOARD_TOKEN is provided as a secret, not a plain var.
+
 # Secrets (set via `wrangler secret put`, never committed):
 #   BOT_TOKEN        — Telegram bot token from @BotFather
 #   TELEGRAM_SECRET  — shared secret Telegram sends in X-Telegram-Bot-Api-Secret-Token
