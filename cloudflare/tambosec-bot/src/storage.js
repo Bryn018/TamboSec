@@ -12,6 +12,7 @@ const TABLE = {
   'audit.json': 'audit',
   'schedules.json': 'schedules',
   'summaries.json': 'summaries',
+  'mail_log.json': 'mail_log',
 }
 
 function tableFor(fileName) {
@@ -122,7 +123,7 @@ export async function getKev() {
 // Module-level DB handle, injected by the Worker on each request.
 let _db = null
 export function setDB(db) { _db = db }
-function getDB() {
+export function getDB() {
   if (!_db) throw new Error('DB not initialised')
   return _db
 }

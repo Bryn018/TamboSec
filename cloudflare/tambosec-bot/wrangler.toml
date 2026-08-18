@@ -8,9 +8,16 @@ binding = "DB"
 database_name = "tambosec-db"
 database_id = "e9fc521e-d803-4da7-8ebf-3e913bb9ee6e"
 
-# Workers AI — free-tier LLM for plain-language finding summaries
+# Workers AI — free-tier LLM for plain-language finding summaries + email phishing classification
 [ai]
 binding = "AI"
+
+# Cloudflare Email Routing delivers mail addressed to secops@insights.autos to this
+# Worker. The Worker classifies it with Workers AI and re-sends safe mail to the
+# verified destination (send_email binding target). This is the Path 2 AI Email Desk.
+[[send_email]]
+name = "EMAIL"
+destination_address = "bolesapit@gmail.com"
 
 # Telegram pushes updates here; the bot replies instantly (no polling).
 # Hourly scheduled posture scans driven by each tenant's /schedule.

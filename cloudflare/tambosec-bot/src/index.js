@@ -1,7 +1,8 @@
-import { setDB } from './storage.js'
+import { setDB, getDB } from './storage.js'
 import { setEnv } from './scanner.js'
 import { handleCommand, handleCallback } from './commands-core.js'
 import { runPostureScan } from './scanner.js'
+import { handleInboundEmail, classifyText } from './mail.js'
 
 // ─── Telegram transport ────────────────────────────────────
 function tg(token, method, body = {}) {
@@ -44,6 +45,41 @@ export default {
       return json({ tenant: tenant.name, domain: tenant.domain, ...result })
     }
 
+    // Classify a sample email with Workers AI (Path 2 verification endpoint).
+    // Usage: /api/classify?from=...&subject=...&body=...  (secret-gated)
+    if (request.method === 'GET' && url.pathname === '/api/classify') {
+      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_SECRET) {
+        return new Response('forbidden', { status: 403 })
+      }
+      const from = url.searchParams.get('from') || 'unknown@unknown'
+      const subject = url.searchParams.get('subject') || ''
+      const body = url.searchParams.get('body') || ''
+      if (!subject && !body) return json({ error: 'provide subject and/or body' }, 400)
+      const cls = await classifyText(from, subject, body, env)
+      return json(cls)
+    }
+
+    // Full email round-trip test (Path 2): builds a synthetic EmailMessage and
+    // runs the real handleInboundEmail (parse -> classify -> EMAIL.send -> D1 log).
+    // Secret-gated. Returns the decision + whether the forward fired.
+    if (request.method === 'GET' && url.pathname === '/api/mailtest') {
+      if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_SECRET) {
+        return new Response('forbidden', { status: 403 })
+      }
+      const from = url.searchParams.get('from') || 'probe@external.test'
+      const subject = url.searchParams.get('subject') || 'Mail test'
+      const body = url.searchParams.get('body') || 'Test message body.'
+      const raw = `From: ${from}\r\nTo: secops@insights.autos\r\nSubject: ${subject}\r\nContent-Type: text/plain\r\n\r\n${body}`
+      // Minimal EmailMessage shape Cloudflare provides.
+      const message = { raw: new TextEncoder().encode(raw), from, to: 'secops@insights.autos' }
+      const forwarded = { fired: false }
+      const origSend = env.EMAIL && env.EMAIL.send
+      if (env.EMAIL) env.EMAIL.send = async (opts) => { forwarded.fired = true; return { ok: true } }
+      const result = await handleInboundEmail(message, env)
+      if (origSend) env.EMAIL.send = origSend
+      return json({ ...result, forwarded: forwarded.fired, destination: env.EMAIL && env.EMAIL.destination_address })
+    }
+
     // One-time webhook registration (call this once after deploy).
     if (request.method === 'GET' && url.pathname === '/setup') {
       const hook = url.origin + '/telegram'
@@ -73,6 +109,18 @@ export default {
     return new Response('not found', { status: 404 })
   },
 
+  // Email Routing delivers mail to secops@insights.autos here (Path 2).
+  async email(message, env, ctx) {
+    setDB(env.DB)
+    setEnv(env)
+    try {
+      await handleInboundEmail(message, env)
+    } catch (e) {
+      console.error('[email] handler error', e.message)
+    }
+    // Acknowledge so Email Routing records the message as processed.
+  },
+
   // Cron: hourly scheduled posture scans.
   async scheduled(event, env, ctx) {
     setDB(env.DB)
@@ -100,6 +148,24 @@ export default {
 
 function token(env) { return env.BOT_TOKEN }
 
+// Persist the owner's Telegram chat id in the config table so Path 2 email
+// alerts can be pushed there. Idempotent upsert.
+async function rememberOwnerChat(chatId) {
+  try {
+    const db = getDB()
+    if (!db) return
+    await db
+      .prepare(
+        `INSERT INTO config (key, value) VALUES ('owner_chat_id', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+      )
+      .bind(String(chatId))
+      .run()
+  } catch (e) {
+    console.error('[chat] remember failed', e.message)
+  }
+}
+
 async function route(token, update) {
   if (update.callback_query) {
     const cq = update.callback_query
@@ -125,6 +191,8 @@ async function route(token, update) {
     const msg = update.message
     const chatId = msg.chat.id
     const reply = makeReply(token, chatId)
+    // Remember the owner's chat so email alerts (Path 2) can reach them.
+    await rememberOwnerChat(chatId)
     const text = msg.text
     if (text.startsWith('/')) {
       const parts = text.slice(1).split(/\s+/)

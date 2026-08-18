@@ -86,3 +86,21 @@ CREATE TABLE kev (
   shortDescription TEXT,
   knownRansomwareCampaignUse TEXT
 );
+
+CREATE TABLE mail_log (
+  id TEXT PRIMARY KEY,
+  from_addr TEXT,
+  to_addr TEXT,
+  subject TEXT,
+  disposition TEXT,      -- 'delivered' | 'quarantined'
+  score REAL,             -- 0..1 phishing confidence
+  reason TEXT,
+  summary TEXT,
+  received_at TEXT,
+  tenant_id TEXT
+);
+
+CREATE TABLE config (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);

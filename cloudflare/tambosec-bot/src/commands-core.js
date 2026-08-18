@@ -363,6 +363,19 @@ export async function cmdSummary({ reply, args }) {
   await reply(`🤖 *Advisor summary:*\n\n${items[0].text}`);
 }
 
+// ─── /maillog ────────────────────────────────────────────
+export async function cmdMailLog({ reply, args }) {
+  const limit = Math.min(Number(args[0]) || 10, 30);
+  const { data: logs } = await readJSON('mail_log.json');
+  if (logs.length === 0) return reply('📭 No mail analyzed yet. Send a message to secops@insights.autos.');
+  const items = logs.slice(-limit).reverse();
+  const lines = items.map((m) => {
+    const icon = m.disposition === 'quarantined' ? '🛑' : '📧';
+    return `${icon} ${m.disposition} | score ${(Number(m.score) || 0).toFixed(2)}\n   From: ${m.from_addr}\n   Subj: ${m.subject || '(none)'}\n   ${m.reason || ''}`;
+  });
+  await reply(`*Email Security Log (${items.length}):*\n\n${lines.join('\n\n')}`);
+}
+
 // ─── Command router ───────────────────────────────────────
 const commands = {
   start: cmdStart,
@@ -377,6 +390,7 @@ const commands = {
   schedule: cmdSchedule,
   setstack: cmdSetStack,
   summary: cmdSummary,
+  maillog: cmdMailLog,
 };
 
 export async function handleCommand({ command, args, reply, chatId }) {
