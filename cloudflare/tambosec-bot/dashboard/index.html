@@ -1064,7 +1064,7 @@
   $('scanBtn').onclick = async () => {
     $('scanOut').innerHTML = '<div class="empty">Scanning… this may take a few seconds.</div>';
     try {
-      const d = await api('/api/scan');
+      const d = await api('/api/scan', { method: 'POST' });
       let out = `<div class="empty" style="color:var(--c-ok)">✅ Scan complete: ${d.findings ? d.findings.length : 0} findings created.</div>`;
       if (d.summary) out += `<pre style="margin-top:12px;color:var(--c-ink-soft)">${escapeHtml(d.summary)}</pre>`;
       $('scanOut').innerHTML = out;
