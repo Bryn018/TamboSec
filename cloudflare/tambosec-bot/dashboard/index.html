@@ -390,6 +390,7 @@
     document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
     document.querySelectorAll('.view').forEach(x => x.classList.remove('active'));
     t.classList.add('active'); $('v-' + t.dataset.v).classList.add('active');
+    if (t.dataset.v === 'tokens') loadTokens(); // refresh token list when shown
   });
 
   // actions
@@ -437,7 +438,6 @@
     if (!confirm('Revoke this token? It will stop working immediately.')) return;
     try { await api('/api/tokens/' + id, { method: 'DELETE' }); toast('Token revoked'); loadTokens(); } catch (e2) { toast('Error: ' + e2.message, true); }
   });
-  document.querySelector('.tab[data-v="tokens"]').onclick = () => { loadTokens(); };
 
   load(); setInterval(load, 60000);
 </script>
