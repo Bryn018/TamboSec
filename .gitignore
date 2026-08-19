@@ -4,3 +4,6 @@ node_modules
 coverage
 *.log
 .DS_Store
+
+# deploy artifacts
+package-lock.json

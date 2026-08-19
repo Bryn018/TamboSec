@@ -681,9 +681,11 @@
   // ═══════════════════════════════════════════════════════════
   // Config + state
   // ═══════════════════════════════════════════════════════════
+  // API base: prefer an explicit ?api= override, otherwise use the same origin
+  // (/api/* is routed to the tambosec-bot Worker on this host), keeping the
+  // dashboard and API on one branded, same-origin domain (tambosec.insights.autos).
   const API = new URLSearchParams(location.search).get('api') ||
-              (location.search.includes('api=') ? '' :
-               'https://tambosec-bot.walybewillin.workers.dev');
+              (location.search.includes('api=') ? '' : location.origin);
 
   const $ = (id) => document.getElementById(id);
 
