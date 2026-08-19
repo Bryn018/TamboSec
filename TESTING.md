@@ -112,3 +112,52 @@ Operator endpoints: `/api/scan`, `/api/threattest`, `/api/corrtest`,
 
 All data stays on Cloudflare. No Google. No third-party trackers. The Telegram
 bot was removed — the website is the interface.
+
+---
+
+## Production hardening (added)
+
+These are enforced on every request at the Worker edge:
+
+- **Rate limiting** (per-IP + global fixed window via KV):
+  - Reads: 120/min per IP, 600/min global.
+  - Writes (POST): 20/min per IP, 60/min global.
+  - Exceeding returns `HTTP 429 { "error": "rate limited", "retryAfter": N }`.
+  - Fail-open if the KV counter store is unavailable (service stays up).
+- **Security headers** on every response: `Strict-Transport-Security`,
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer`, `Content-Security-Policy: default-src 'none'`.
+- **Audit trail**: every read, action, and Copilot query is logged to the D1
+  `audit` table. Inspect it via the token-gated endpoint:
+
+```bash
+# recent audit rows (all tenants)
+curl "https://tambosec-bot.walybewillin.workers.dev/api/audit?token=<DASHBOARD_TOKEN>&n=50"
+# a single tenant
+curl "https://tambosec-bot.walybewillin.workers.dev/api/audit?tenantId=tnt_real&token=<DASHBOARD_TOKEN>"
+```
+
+  Event types include `view.dashboard`, `view.findings`, `view.threat`,
+  `view.alerts`, `view.maillog`, `view.summary`, `view.finding`, `view.tenants`,
+  `copilot.ask`, `scan.manual`, `mail.classify`, `item.acked`,
+  `scan.schedule.updated`, `tenant.stack.updated`, `remediation.requested`,
+  `remediation.approved/rejected`, `tenant.created`.
+
+- **Auth model**: the website is protected by the `DASHBOARD_TOKEN` (shared
+  secret). Cloudflare Access (SSO) is optional and was NOT enabled — enable it
+  from the Zero Trust dashboard if you want SSO in front of the site.
+
+---
+
+## Automated smoke test
+
+`scripts/smoke.mjs` exercises the live API (auth gate, security headers, audit
+trail, 404). Run it with the token:
+
+```bash
+cd cloudflare/tambosec-bot
+DASHBOARD_TOKEN=<token> node scripts/smoke.mjs tnt_real
+# -> ALL PASS (exit 0)
+```
+
+The rate limit is best verified manually (flood the endpoint; expect 429s).

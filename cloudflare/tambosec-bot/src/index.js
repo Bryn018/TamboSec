@@ -5,19 +5,61 @@ import { probeThreatScope, correlateThreats } from './threatintel.js'
 import { askCopilot } from './copilot.js'
 import { getDashboardData } from './dashboard.js'
 
+// Security hardening headers applied to every Worker response.
+const SEC = {
+  'strict-transport-security': 'max-age=31536000; includeSubDomains',
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'DENY',
+  'referrer-policy': 'no-referrer',
+  'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
+}
+
 // JSON helper with CORS so the Pages dashboard can call the API cross-origin.
 // Endpoints stay token-gated (DASHBOARD_TOKEN) — CORS only relaxes the browser
-// same-origin check; it does not bypass auth.
+// same-origin check; it does not bypass auth. Security headers are included on
+// every response.
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: {
+    headers: Object.assign({
       'content-type': 'application/json',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': 'content-type, x-tambosec-token',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    },
+    }, SEC),
   })
+}
+
+// Fixed-window rate limiting via KV. Two buckets per request class:
+//   • per-IP   — blunts a single abuser / token brute-force (120 read / 20 write per min)
+//   • global   — blunts a flood spread across many IPs (Cloudflare edges assign
+//                different CF-Connecting-IP per request, so per-IP alone is leaky)
+// Fail-open if KV is missing so the service stays up even if the store is down.
+async function bump(env, kind, key, window) {
+  const now = Math.floor(Date.now() / 1000)
+  let rec = await env.TAMBOSEC_RL.get(key, { type: 'json' }).catch(() => null)
+  if (!rec || rec.reset <= now) rec = { count: 0, reset: now + window }
+  rec.count++
+  await env.TAMBOSEC_RL.put(key, JSON.stringify(rec), { expirationTtl: window + 5 }).catch(() => {})
+  return rec
+}
+
+async function rateLimit(env, request, kind) {
+  if (!env.TAMBOSEC_RL) return null
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown'
+  const window = 60
+  const limits = kind === 'write'
+    ? { ip: 20, global: 60 }
+    : { ip: 120, global: 600 }
+  const now = Math.floor(Date.now() / 1000)
+
+  const ipRec = await bump(env, kind, `rl:${kind}:${ip}`, window)
+  if (ipRec.count > limits.ip) return { limited: true, retryAfter: Math.max(1, ipRec.reset - now) }
+
+  const gRec = await bump(env, kind, `rl:${kind}:global`, window)
+  if (gRec.count > limits.global) return { limited: true, retryAfter: Math.max(1, gRec.reset - now) }
+
+  return null
 }
 
 // Every API endpoint requires the DASHBOARD_TOKEN (passed as ?token= or the
@@ -56,16 +98,28 @@ export default {
       return json({ ok: true, service: 'tambosec-bot' })
     }
 
+    // Per-IP rate limiting on every request (incl. auth attempts) to blunt
+    // token brute-force and abuse. Fail-open if the KV store is unavailable.
+    const rl = await rateLimit(env, request, request.method === 'POST' ? 'write' : 'read')
+    if (rl) {
+      return new Response(JSON.stringify({ error: 'rate limited', retryAfter: rl.retryAfter }), {
+        status: 429,
+        headers: Object.assign({ 'retry-after': String(rl.retryAfter) }, SEC),
+      })
+    }
+
     // All endpoints below are token-gated.
     if (!authed(request, url, env)) return authErr()
 
     if (request.method === 'GET' && url.pathname === '/api/dashboard') {
       const tenantId = q(request, url, 'tenantId')
       if (!tenantId) return json({ error: 'tenantId required' }, 400)
+      await logAudit(env, tenantId, 'view.dashboard', {})
       return json(await getDashboardData(tenantId))
     }
 
     if (request.method === 'GET' && url.pathname === '/api/tenants') {
+      await logAudit(env, 'all', 'view.tenants', {})
       const { results } = await env.DB.prepare('SELECT id, name, domain, stack, createdAt FROM tenants ORDER BY createdAt DESC').all()
       return json({ tenants: (results || []).map((t) => ({ ...t, stack: safeStack(t.stack) })) })
     }
@@ -74,6 +128,7 @@ export default {
       const tenantId = q(request, url, 'tenantId')
       const severity = q(request, url, 'severity')
       if (!tenantId) return json({ error: 'tenantId required' }, 400)
+      await logAudit(env, tenantId, 'view.findings', { severity: severity || 'all' })
       let sql = 'SELECT * FROM findings WHERE tenantId = ?'
       const binds = [tenantId]
       if (severity) { sql += ' AND severity = ?'; binds.push(severity) }
@@ -86,6 +141,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/api/finding') {
       const id = q(request, url, 'id')
       if (!id) return json({ error: 'id required' }, 400)
+      await logAudit(env, 'lookup', 'view.finding', { id })
       const row = await env.DB.prepare('SELECT * FROM findings WHERE id = ?').bind(id).first()
       if (!row) return json({ error: 'not found' }, 404)
       return json({ finding: rowToObj(row) })
@@ -94,6 +150,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/api/alerts') {
       const tenantId = q(request, url, 'tenantId')
       if (!tenantId) return json({ error: 'tenantId required' }, 400)
+      await logAudit(env, tenantId, 'view.alerts', {})
       const { results } = await env.DB.prepare(
         'SELECT * FROM alerts WHERE tenantId = ? AND status = ? ORDER BY createdAt DESC'
       ).bind(tenantId, 'unread').all()
@@ -102,6 +159,7 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/api/maillog') {
       const n = Math.min(Number(q(request, url, 'n')) || 20, 50)
+      await logAudit(env, 'all', 'view.maillog', { n })
       const { results } = await env.DB.prepare('SELECT * FROM mail_log ORDER BY received_at DESC LIMIT ?').bind(n).all()
       return json({ mail: (results || []).map(rowToObj) })
     }
@@ -110,6 +168,7 @@ export default {
       const tenantId = q(request, url, 'tenantId')
       const tenant = await env.DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?').bind(tenantId).first()
       if (!tenant) return json({ error: 'tenant not found' }, 404)
+      await logAudit(env, tenant.id, 'view.threat', {})
       const stack = safeStack(tenant.stack)
       if (!stack.length) return json({ error: 'set a stack first (/api/setstack)' }, 400)
       const ti = await correlateThreats(tenant.id, tenant.name, stack)
@@ -132,6 +191,7 @@ export default {
       const tenantId = q(request, url, 'tenantId')
       const tenant = await env.DB.prepare('SELECT id, name, domain, stack FROM tenants WHERE id = ?').bind(tenantId).first()
       if (!tenant) return json({ error: 'tenant not found' }, 404)
+      await logAudit(env, tenant.id, 'scan.manual', {})
       const result = await runPostureScan(tenant.id, tenant.domain || 'demo.local', tenant.stack)
       return json({ tenant: tenant.name, domain: tenant.domain, ...result })
     }
@@ -143,6 +203,7 @@ export default {
       if (!tenantId || !question) return json({ error: 'tenantId and q required' }, 400)
       const tenant = await env.DB.prepare('SELECT id, name FROM tenants WHERE id = ?').bind(tenantId).first()
       if (!tenant) return json({ error: 'tenant not found' }, 404)
+      await logAudit(env, tenant.id, 'copilot.ask', { qlen: question.length })
       const ans = await askCopilot(question, tenant.id, tenant.name, env)
       return json(ans)
     }
@@ -151,6 +212,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/api/summary') {
       const tenantId = q(request, url, 'tenantId')
       if (!tenantId) return json({ error: 'tenantId required' }, 400)
+      await logAudit(env, tenantId, 'view.summary', {})
       const { results } = await env.DB.prepare('SELECT text FROM summaries WHERE tenantId = ? ORDER BY createdAt DESC LIMIT 1').bind(tenantId).all()
       return json({ summary: (results && results[0] && results[0].text) || null })
     }
@@ -227,6 +289,7 @@ export default {
     if (request.method === 'POST' && url.pathname === '/api/classify') {
       const b = await bodyJson(request)
       const cls = await classifyText(b.from || 'unknown@unknown', b.subject || '', b.body || '', env)
+      await logAudit(env, 'all', 'mail.classify', { from: b.from || 'unknown@unknown', verdict: cls.verdict })
       return json(cls)
     }
 
@@ -257,6 +320,18 @@ export default {
         .bind(id, name, domain, JSON.stringify(stk)).run()
       await logAudit(env, id, 'tenant.created', { name, domain })
       return json({ ok: true, id, name, domain, stack: stk }, 201)
+    }
+
+    // ─── Audit trail (GET, token-gated) ─────────────────
+    if (request.method === 'GET' && url.pathname === '/api/audit') {
+      const tenantId = q(request, url, 'tenantId') || 'all'
+      const n = Math.min(Number(q(request, url, 'n')) || 50, 200)
+      let sql = 'SELECT id, tenantId, type, actor, ts, metadata FROM audit'
+      const binds = []
+      if (tenantId !== 'all') { sql += ' WHERE tenantId = ?'; binds.push(tenantId) }
+      sql += ' ORDER BY ts DESC LIMIT ?'
+      const { results } = await env.DB.prepare(sql).bind(...binds, n).all()
+      return json({ audit: (results || []).map((a) => ({ ...a, metadata: safeStack(a.metadata) })) })
     }
 
     // ─── Dashboard HTML fallback (also served from Pages) ─

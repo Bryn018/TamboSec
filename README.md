@@ -95,6 +95,12 @@ tambosec/
    (saved to localStorage). Optionally wrap the site in Cloudflare Access (Zero
    Trust → Access → Applications → add a self-hosted app for
    `tambosec.insights.autos`) for SSO login in front of the token.
+
+   Every request is also rate-limited (per-IP + global fixed window via KV:
+   120 read / 20 write per IP per minute, 600 / 60 global) and stamped with
+   security headers (HSTS, nosniff, X-Frame-Options: DENY, Referrer-Policy,
+   CSP). All reads/actions are written to a D1 audit log (queryable at
+   `/api/audit`).
 2. **Cloudflare secrets** (set via `wrangler secret put`):
    - `DASHBOARD_TOKEN` — gates the `/api/*` endpoints and dashboard data
 3. **Email Routing** — create a rule on your zone routing the security address

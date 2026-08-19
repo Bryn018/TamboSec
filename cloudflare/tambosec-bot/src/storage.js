@@ -1,7 +1,7 @@
-// D1-backed storage for the TamboSec bot.
-// Exposes the SAME signatures as the legacy GitHub-JSON storage.js
+// D1-backed storage for the TamboSec Worker.
+// Exposes the SAME signatures as the legacy GitHub-JSON storage layer
 // (readJSON / writeJSON / appendJSON / updateJSON / queryJSON) so that
-// commands-core.js and scanner.js run unchanged. The "database" is now a
+// scanner.js and the API handlers run unchanged. The "database" is now a
 // Cloudflare D1 SQLite instance instead of JSON files in the repo.
 
 const TABLE = {

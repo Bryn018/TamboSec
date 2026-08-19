@@ -19,7 +19,6 @@ binding = "AI"
 name = "EMAIL"
 destination_address = "bolesapit@gmail.com"
 
-# Telegram pushes updates here; the bot replies instantly (no polling).
 # Hourly scheduled posture scans driven by each tenant's /schedule.
 [triggers]
 crons = ["7 * * * *"]
@@ -40,10 +39,14 @@ DOH_URL = "https://cloudflare-dns.com/dns-query"
 binding = "THREAT_SCOPE"
 id = "e4896adb50fc4821909069f6b92b4175"
 
+# Per-IP rate-limit counter store (in-Worker fixed-window throttling).
+[[kv_namespaces]]
+binding = "TAMBOSEC_RL"
+id = "a79824080dcc4e1a81e26a6e4130fb91"
+
 # Dashboard + Copilot API token (set via `wrangler secret put DASHBOARD_TOKEN`).
-# Used to gate the /dashboard and /api/dashboard, /api/ask endpoints.
+# Used to gate the /api/* endpoints and the Pages dashboard.
 # DASHBOARD_TOKEN is provided as a secret, not a plain var.
 
 # Secrets (set via `wrangler secret put`, never committed):
-#   BOT_TOKEN        — Telegram bot token from @BotFather
-#   TELEGRAM_SECRET  — shared secret Telegram sends in X-Telegram-Bot-Api-Secret-Token
+#   DASHBOARD_TOKEN  — shared secret that gates all /api/* endpoints
