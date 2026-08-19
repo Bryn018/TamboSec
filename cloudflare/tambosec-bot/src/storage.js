@@ -1,8 +1,7 @@
 // D1-backed storage for the TamboSec Worker.
-// Exposes the SAME signatures as the legacy GitHub-JSON storage layer
-// (readJSON / writeJSON / appendJSON / updateJSON / queryJSON) so that
-// scanner.js and the API handlers run unchanged. The "database" is now a
-// Cloudflare D1 SQLite instance instead of JSON files in the repo.
+// Exposes JSON-style accessors (readJSON / appendJSON / updateJSON) that map
+// to D1 tables, so scanner.js and the API handlers run unchanged. The
+// "database" is a Cloudflare D1 SQLite instance — no JSON files in the repo.
 
 const TABLE = {
   'tenants.json': 'tenants',
@@ -47,26 +46,6 @@ export async function readJSON(fileName) {
   return { data: (results || []).map(rowToObj), sha: null }
 }
 
-export async function writeJSON(fileName, data, _sha = null) {
-  const db = getDB()
-  const table = tableFor(fileName)
-  // Full replace (used by scheduler upserts on the small schedules table).
-  const tx = db.batch()
-  tx.add(db.prepare(`DELETE FROM ${table}`))
-  for (const item of data) {
-    const r = objToRow(item)
-    const cols = Object.keys(r)
-    const placeholders = cols.map(() => '?').join(',')
-    tx.add(
-      db.prepare(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`).bind(
-        ...cols.map((c) => r[c])
-      )
-    )
-  }
-  await tx.submit()
-  return data
-}
-
 export async function appendJSON(fileName, item) {
   const db = getDB()
   const table = tableFor(fileName)
@@ -96,11 +75,6 @@ export async function updateJSON(fileName, predicate, updater) {
     .bind(...cols.map((c) => r[c]), r.id)
     .run()
   return updated
-}
-
-export async function queryJSON(fileName, predicate) {
-  const { data } = await readJSON(fileName)
-  return data.filter(predicate)
 }
 
 // Replace prior open findings + unread alerts for a tenant so each scan
@@ -161,82 +135,4 @@ export async function bulkInsert(fileName, rows) {
     inserted += slice.length
   }
   return inserted
-}
-
-// ─── Path 4: RBAC ──────────────────────────────────────────
-// role rank: higher = more privilege
-export const ROLE_RANK = { viewer: 1, analyst: 2, admin: 3, owner: 4 }
-export const ROLES = ['viewer', 'analyst', 'admin', 'owner']
-
-export async function getUser(chatId) {
-  const db = getDB()
-  const row = await db.prepare('SELECT * FROM users WHERE id = ?').bind(String(chatId)).first()
-  if (!row) return null
-  return rowToObj(row)
-}
-
-export async function upsertUser(chatId, tenantId, role, name) {
-  const db = getDB()
-  await db
-    .prepare(
-      `INSERT INTO users (id, tenantId, role, name, createdAt)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET tenantId = excluded.tenantId, role = excluded.role, name = excluded.name`
-    )
-    .bind(String(chatId), tenantId, role, name || null, new Date().toISOString())
-    .run()
-  return getUser(chatId)
-}
-
-export async function listUsers() {
-  const db = getDB()
-  const { results } = await db.prepare('SELECT * FROM users ORDER BY role DESC').all()
-  return (results || []).map(rowToObj)
-}
-
-export async function countUsers() {
-  const db = getDB()
-  const row = await db.prepare('SELECT COUNT(*) AS c FROM users').first()
-  return row ? row.c : 0
-}
-
-// Resolve requester role. The owner chat id (captured in config by Path 2) is a
-// global superuser. If no users exist yet, the first configured owner acts as owner.
-export async function resolveRole(chatId) {
-  const u = await getUser(chatId)
-  if (u) return u.role
-  // fall back to owner_chat_id from config
-  try {
-    const db = getDB()
-    const row = await db.prepare("SELECT value FROM config WHERE key = 'owner_chat_id'").first()
-    if (row && String(row.value) === String(chatId)) return 'owner'
-  } catch { /* ignore */ }
-  return null
-}
-
-// Does the requester with `role` satisfy the minimum required role?
-export function roleSatisfies(role, minRole) {
-  const have = ROLE_RANK[role] || 0
-  const need = ROLE_RANK[minRole] || 0
-  return have >= need
-}
-
-// Seed the owner from config (idempotent) — run at startup. Only CREATES the
-// owner user if no row exists for the config chat; it never demotes or
-// promotes an existing user (that would let rememberOwnerChat's legacy
-// Path-2 capture accidentally re-grant owner to whoever messaged last).
-export async function seedOwnerFromConfig() {
-  try {
-    const db = getDB()
-    const row = await db.prepare("SELECT value FROM config WHERE key = 'owner_chat_id'").first()
-    if (!row) return
-    const chatId = String(row.value)
-    const existing = await getUser(chatId)
-    if (!existing) {
-      await upsertUser(chatId, null, 'owner', null)
-      console.log('[rbac] seeded owner from config:', chatId)
-    }
-  } catch (e) {
-    console.error('[rbac] seed failed', e.message)
-  }
 }
