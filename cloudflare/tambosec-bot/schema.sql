@@ -127,3 +127,19 @@ CREATE TABLE users (
   name TEXT,
   createdAt TEXT
 );
+
+-- Per-tenant API tokens minted/revoked from the website. The shared
+-- DASHBOARD_TOKEN secret is the OWNER and can create/revoke these. A token is
+-- scoped to a single tenant (enforced at the API layer) and cannot manage tokens.
+-- `token` holds the raw secret (shown once on creation); `prefix` is for display.
+CREATE TABLE api_tokens (
+  id TEXT PRIMARY KEY,
+  token TEXT NOT NULL,
+  prefix TEXT,
+  label TEXT,
+  tenantId TEXT,
+  role TEXT,                    -- admin | analyst | viewer
+  active INTEGER DEFAULT 1,
+  createdAt TEXT,
+  lastUsedAt TEXT
+);

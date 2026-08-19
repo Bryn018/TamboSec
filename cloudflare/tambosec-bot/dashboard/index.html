@@ -121,6 +121,7 @@
     <div class="tab" data-v="threat">Threat Intel</div>
     <div class="tab" data-v="mail">Email Desk</div>
     <div class="tab" data-v="actions">Actions</div>
+    <div class="tab" data-v="tokens">Tokens</div>
     <div class="tab" data-v="copilot">Copilot</div>
   </div>
 
@@ -205,7 +206,40 @@
     </section>
   </div>
 
-  <div class="view" id="v-copilot">
+  <div class="view" id="v-tokens">
+    <section><h2>API tokens</h2>
+      <div class="panel" style="padding:16px">
+        <div id="tokenOwnerOnly" style="display:none">
+          <div class="row2">
+            <div>
+              <div style="color:var(--muted);font-size:12px;margin-bottom:6px">Label (e.g. "SOC analyst laptop")</div>
+              <input id="tokLabel" placeholder="token label" style="width:100%" />
+            </div>
+            <div>
+              <div style="color:var(--muted);font-size:12px;margin-bottom:6px">Tenant</div>
+              <input id="tokTenant" placeholder="tnt_real" style="width:100%" value="tnt_real" />
+            </div>
+          </div>
+          <div class="row2" style="margin-top:12px">
+            <div>
+              <div style="color:var(--muted);font-size:12px;margin-bottom:6px">Role</div>
+              <select id="tokRole" style="width:100%">
+                <option value="analyst">analyst (read + scan)</option>
+                <option value="admin">admin (manage + remediate)</option>
+                <option value="viewer">viewer (read only)</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:flex-end">
+              <button id="tokGen">Generate token</button>
+            </div>
+          </div>
+          <div id="tokNew" class="answer"></div>
+        </div>
+        <div id="tokenNoOwner" class="empty">Only the owner token (DASHBOARD_TOKEN) can manage API tokens. Switch to the owner token to generate or revoke tokens.</div>
+        <div id="tokenList" class="empty" style="margin-top:14px">Loading…</div>
+      </div>
+    </section>
+  </div>
     <section><h2>🤖 Security Copilot</h2>
       <div class="panel" style="padding:16px">
         <textarea id="askIn" class="ask" placeholder="Ask about this tenant's posture — e.g. 'Summarize our top critical risks and what to fix first'"></textarea>
@@ -367,6 +401,44 @@
   $('askBtn').onclick = async () => { const q = $('askIn').value.trim(); if (!q) return; $('answer').textContent = 'Thinking…'; try { const d = await api('/api/ask&q=' + encodeURIComponent(q)); $('answer').textContent = d.answer || d.error || JSON.stringify(d); } catch (e) { $('answer').textContent = 'Error: ' + e.message; } };
 
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])); }
+  // ─── Tokens tab ───────────────────────────────────────
+  async function loadTokens() {
+    try {
+      const d = await api('/api/tokens');
+      const isOwner = true;
+      $('tokenOwnerOnly').style.display = isOwner ? 'block' : 'none';
+      $('tokenNoOwner').style.display = isOwner ? 'none' : 'block';
+      const t = d.tokens || [];
+      $('tokenList').innerHTML = t.length ? t.map(x => {
+        const badge = x.active ? '' : ' <span class="pill" style="border-color:var(--crit);color:var(--crit)">revoked</span>';
+        const revoke = x.active ? '<button class="mini danger" data-revoke="' + (x.id || '') + '">Revoke</button>' : '';
+        return '<div class="mailrow"><span><b>' + escapeHtml(x.label || '') + '</b> <span class="muted">' + (x.prefix || '') + '…</span>' + badge + '</span><span class="pill">' + (x.role || '') + '</span><span class="pill">' + (x.tenantId || '') + '</span><span class="btnrow">' + revoke + '</span></div>';
+      }).join('') : '<div class="empty">No tokens yet. Generate one above.</div>';
+    } catch (e) {
+      const no = (e.message || '').includes('403');
+      $('tokenOwnerOnly').style.display = no ? 'none' : 'block';
+      $('tokenNoOwner').style.display = no ? 'block' : 'none';
+      $('tokenList').innerHTML = '<div class="empty">' + (no ? 'Owner access required to view tokens.' : 'failed') + '</div>';
+    }
+  }
+  $('tokGen').onclick = async () => {
+    const label = $('tokLabel').value.trim(), tenant = $('tokTenant').value.trim(), role = $('tokRole').value;
+    if (!label || !tenant) return toast('Label and tenant required', true);
+    try {
+      const d = await api('/api/tokens', { method: 'POST', headers: { 'content-type': 'application/json', 'X-TamboSec-Token': state.token }, body: JSON.stringify({ label, tenantId: tenant, role }) });
+      $('tokNew').textContent = 'Token created (copy now — shown once):\n' + d.token;
+      $('tokLabel').value = '';
+      loadTokens();
+    } catch (e) { toast('Error: ' + e.message, true); }
+  };
+  $('tokenList').addEventListener('click', async (e) => {
+    const id = e.target && e.target.getAttribute && e.target.getAttribute('data-revoke');
+    if (!id) return;
+    if (!confirm('Revoke this token? It will stop working immediately.')) return;
+    try { await api('/api/tokens/' + id, { method: 'DELETE' }); toast('Token revoked'); loadTokens(); } catch (e2) { toast('Error: ' + e2.message, true); }
+  });
+  document.querySelector('.tab[data-v="tokens"]').onclick = () => { loadTokens(); };
+
   load(); setInterval(load, 60000);
 </script>
 </body>

@@ -55,16 +55,33 @@ async function rateLimit(env, request, kind) {
   return null
 }
 
-// Every API endpoint requires the DASHBOARD_TOKEN (passed as ?token= or the
-// X-TamboSec-Token header). The site is additionally wrapped in Cloudflare
-// Access, so this is defense-in-depth.
+// Auth model:
+//   • The shared DASHBOARD_TOKEN secret (wrangler secret) is the OWNER. It can
+//     use every endpoint AND create/revoke per-tenant API tokens.
+//   • Per-tenant tokens (rows in api_tokens, minted by an owner) can call the
+//     API scoped to their tenant but CANNOT create/revoke tokens (no escalation).
+// Every API endpoint is token-gated; the site is additionally wrapped in
+// Cloudflare Access, so this is defense-in-depth.
 function authErr() { return json({ error: 'unauthorized' }, 403) }
 function tokenOf(request, url) {
   return url.searchParams.get('token') || request.headers.get('X-TamboSec-Token')
 }
-function authed(request, url, env) {
-  return tokenOf(request, url) === env.DASHBOARD_TOKEN
+// Returns { ok, owner, tenantId, role, tokenRow } for the request's token.
+async function authInfo(request, url, env) {
+  const tok = tokenOf(request, url)
+  if (!tok) return { ok: false }
+  if (tok === env.DASHBOARD_TOKEN) return { ok: true, owner: true, tenantId: null, role: 'owner' }
+  const row = await env.DB.prepare('SELECT id, tenantId, role, label, active FROM api_tokens WHERE token = ? AND active = 1').bind(tok).first().catch(() => null)
+  if (row) {
+    // best-effort last-used stamp (non-blocking)
+    env.DB.prepare("UPDATE api_tokens SET lastUsedAt = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").bind(row.id).run().catch(() => {})
+    return { ok: true, owner: false, tenantId: row.tenantId, role: row.role, tokenRow: row }
+  }
+  return { ok: false }
 }
+async function authed(request, url, env) { return (await authInfo(request, url, env)).ok }
+// Owner-only gate for token management endpoints.
+async function isOwner(request, url, env) { return (await authInfo(request, url, env)).owner }
 function q(request, url, name) { return url.searchParams.get(name) }
 function bodyJson(request) { return request.json().catch(() => ({})) }
 
@@ -102,7 +119,14 @@ export default {
     }
 
     // All endpoints below are token-gated.
-    if (!authed(request, url, env)) return authErr()
+    if (!(await authed(request, url, env))) return authErr()
+    // Resolve the caller (owner vs scoped per-tenant token) for scoping below.
+    const caller = await authInfo(request, url, env)
+    // A scoped (non-owner) token can only ever act on its own tenant, regardless
+    // of the tenantId query param — this enforces tenant isolation.
+    if (caller && !caller.owner && caller.tenantId) {
+      url.searchParams.set('tenantId', caller.tenantId)
+    }
 
     if (request.method === 'GET' && url.pathname === '/api/dashboard') {
       const tenantId = q(request, url, 'tenantId')
@@ -313,6 +337,49 @@ export default {
         .bind(id, name, domain, JSON.stringify(stk)).run()
       await logAudit(env, id, 'tenant.created', { name, domain })
       return json({ ok: true, id, name, domain, stack: stk }, 201)
+    }
+
+    // ─── API token management (OWNER only) ──────────────
+    if (url.pathname === '/api/tokens') {
+      if (!(await isOwner(request, url, env))) return authErr()
+      if (request.method === 'GET') {
+        await logAudit(env, 'all', 'token.list', {})
+        const { results } = await env.DB.prepare(
+          'SELECT id, label, tenantId, role, prefix, createdAt, lastUsedAt, active FROM api_tokens ORDER BY createdAt DESC'
+        ).all()
+        return json({ tokens: (results || []) })
+      }
+      if (request.method === 'POST') {
+        const b = await bodyJson(request)
+        const label = (b.label || '').toString().slice(0, 60).trim()
+        const tenantId = (b.tenantId || '').toString().trim()
+        const role = (b.role === 'admin' || b.role === 'analyst' || b.role === 'viewer') ? b.role : 'analyst'
+        if (!label || !tenantId) return json({ error: 'label and tenantId required' }, 400)
+        const t = await env.DB.prepare('SELECT id FROM tenants WHERE id = ?').bind(tenantId).first().catch(() => null)
+        if (!t) return json({ error: 'unknown tenantId' }, 400)
+        const raw = Array.from(crypto.getRandomValues(new Uint8Array(32))).map((x) => x.toString(16).padStart(2, '0')).join('')
+        const id = 'tok_' + crypto.randomUUID().slice(0, 8)
+        const prefix = raw.slice(0, 8)
+        await env.DB.prepare(
+          'INSERT INTO api_tokens (id, token, prefix, label, tenantId, role, active, createdAt) VALUES (?, ?, ?, ?, ?, ?, 1, strftime(\'%Y-%m-%dT%H:%M:%SZ\',\'now\'))'
+        ).bind(id, raw, prefix, label, tenantId, role).run()
+        await logAudit(env, tenantId, 'token.created', { id, label, role })
+        // Return the RAW token exactly once (it is shown to the owner and never stored displayable again).
+        return json({ ok: true, id, token: raw, prefix, label, tenantId, role }, 201)
+      }
+      return json({ error: 'method not allowed' }, 405)
+    }
+    if (url.pathname.startsWith('/api/tokens/')) {
+      if (!(await isOwner(request, url, env))) return authErr()
+      const id = url.pathname.split('/').pop()
+      if (request.method === 'DELETE') {
+        const row = await env.DB.prepare('SELECT tenantId, label FROM api_tokens WHERE id = ?').bind(id).first().catch(() => null)
+        if (!row) return json({ error: 'not found' }, 404)
+        await env.DB.prepare('UPDATE api_tokens SET active = 0 WHERE id = ?').bind(id).run()
+        await logAudit(env, row.tenantId || 'all', 'token.revoked', { id, label: row.label })
+        return json({ ok: true, id })
+      }
+      return json({ error: 'method not allowed' }, 405)
     }
 
     // ─── Audit trail (GET, token-gated) ─────────────────
