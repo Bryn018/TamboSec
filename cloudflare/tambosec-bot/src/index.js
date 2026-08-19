@@ -1,5 +1,5 @@
 import { setDB, getDB } from './storage.js'
-import { setEnv, runPostureScan, getEnv } from './scanner.js'
+import { setEnv, runPostureScan } from './scanner.js'
 import { handleInboundEmail, classifyText } from './mail.js'
 import { probeThreatScope, correlateThreats } from './threatintel.js'
 import { askCopilot } from './copilot.js'

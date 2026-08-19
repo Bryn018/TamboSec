@@ -59,24 +59,6 @@ export async function appendJSON(fileName, item) {
   return item
 }
 
-export async function updateJSON(fileName, predicate, updater) {
-  const db = getDB()
-  const table = tableFor(fileName)
-  const { results } = await db.prepare(`SELECT * FROM ${table}`).all()
-  const rows = (results || []).map(rowToObj)
-  const idx = rows.findIndex(predicate)
-  if (idx === -1) return null
-  const updated = updater(rows[idx])
-  const r = objToRow(updated)
-  const cols = Object.keys(r)
-  const setClause = cols.map((c) => `${c} = ?`).join(', ')
-  await db
-    .prepare(`UPDATE ${table} SET ${setClause} WHERE id = ?`)
-    .bind(...cols.map((c) => r[c]), r.id)
-    .run()
-  return updated
-}
-
 // Replace prior open findings + unread alerts for a tenant so each scan
 // is a fresh point-in-time snapshot (no duplicate pile-up).
 export async function clearOpenForTenant(tenantId) {
