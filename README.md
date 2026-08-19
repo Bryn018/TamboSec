@@ -1,6 +1,6 @@
 # TamboSec
 
-AI-native security operations on Cloudflare — $0 infra, zero servers. Live at **[tambosec.insights.autos](https://tambosec.insights.autos)**.
+AI-native security operations on Cloudflare (https://tambosec.insights.autos)**.
 
 ## What it does
 - **Posture scan** — HTTPS headers, DNS/email auth (SPF/DKIM/DMARC via DoH), CISA KEV exposure
