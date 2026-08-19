@@ -39,10 +39,14 @@ DOH_URL = "https://cloudflare-dns.com/dns-query"
 binding = "THREAT_SCOPE"
 id = "e4896adb50fc4821909069f6b92b4175"
 
-# Per-IP rate-limit counter store (in-Worker fixed-window throttling).
-[[kv_namespaces]]
-binding = "TAMBOSEC_RL"
-id = "a79824080dcc4e1a81e26a6e4130fb91"
+# Atomic, single-threaded rate limiter (per-IP + global fixed window).
+# Implemented as a separate Worker (tambosec-ratelimiter); referenced by script_name
+# so the main Worker stays in service-worker format. Replaces a KV
+# read-modify-write counter, which lost increments under concurrent load.
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+script_name = "tambosec-ratelimiter"
 
 # Dashboard + Copilot API token (set via `wrangler secret put DASHBOARD_TOKEN`).
 # Used to gate the /api/* endpoints and the Pages dashboard.
@@ -50,3 +54,7 @@ id = "a79824080dcc4e1a81e26a6e4130fb91"
 
 # Secrets (set via `wrangler secret put`, never committed):
 #   DASHBOARD_TOKEN  — shared secret that gates all /api/* endpoints
+
+# The RateLimiter Durable Object is defined in the separate "tambosec-ratelimiter"
+# Worker (see ./ratelimiter-worker). It is referenced above via script_name, so
+# this Worker needs no migrations entry.

@@ -1,0 +1,11 @@
+name = "tambosec-ratelimiter"
+main = "index.js"
+compatibility_date = "2026-08-18"
+
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiter"]

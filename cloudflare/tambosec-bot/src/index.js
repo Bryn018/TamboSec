@@ -30,35 +30,28 @@ function json(obj, status = 200) {
   })
 }
 
-// Fixed-window rate limiting via KV. Two buckets per request class:
+// Atomic rate limiting via a Durable Object (separate Worker: tambosec-ratelimiter,
+// referenced by script_name). The DO is single-threaded per instance, so parallel
+// hits can't lose increments — the failure mode of a KV read-modify-write counter.
+// Two buckets per request class:
 //   • per-IP   — blunts a single abuser / token brute-force (120 read / 20 write per min)
 //   • global   — blunts a flood spread across many IPs (Cloudflare edges assign
 //                different CF-Connecting-IP per request, so per-IP alone is leaky)
-// Fail-open if KV is missing so the service stays up even if the store is down.
-async function bump(env, kind, key, window) {
-  const now = Math.floor(Date.now() / 1000)
-  let rec = await env.TAMBOSEC_RL.get(key, { type: 'json' }).catch(() => null)
-  if (!rec || rec.reset <= now) rec = { count: 0, reset: now + window }
-  rec.count++
-  await env.TAMBOSEC_RL.put(key, JSON.stringify(rec), { expirationTtl: window + 5 }).catch(() => {})
-  return rec
-}
-
+// Fail-open if the DO binding is missing so the service stays up.
 async function rateLimit(env, request, kind) {
-  if (!env.TAMBOSEC_RL) return null
-  const ip = request.headers.get('CF-Connecting-IP') || 'unknown'
-  const window = 60
-  const limits = kind === 'write'
-    ? { ip: 20, global: 60 }
-    : { ip: 120, global: 600 }
-  const now = Math.floor(Date.now() / 1000)
-
-  const ipRec = await bump(env, kind, `rl:${kind}:${ip}`, window)
-  if (ipRec.count > limits.ip) return { limited: true, retryAfter: Math.max(1, ipRec.reset - now) }
-
-  const gRec = await bump(env, kind, `rl:${kind}:global`, window)
-  if (gRec.count > limits.global) return { limited: true, retryAfter: Math.max(1, gRec.reset - now) }
-
+  if (!env.RATE_LIMITER) return null
+  const id = env.RATE_LIMITER.idFromName(kind) // one instance per class (read|write)
+  const stub = env.RATE_LIMITER.get(id)
+  const res = await stub.fetch('https://rl/' + kind, {
+    headers: { 'CF-Connecting-IP': request.headers.get('CF-Connecting-IP') || 'unknown' },
+  }).catch(() => null)
+  if (!res || !res.ok) {
+    if (res && res.status === 429) {
+      const body = await res.json().catch(() => ({}))
+      return { limited: true, retryAfter: body.retryAfter || 60 }
+    }
+    return null // fail-open
+  }
   return null
 }
 
